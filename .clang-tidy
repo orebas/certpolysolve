@@ -1,0 +1,4 @@
+InheritParentConfig: false
+Checks: '-*,bugprone-use-after-move,bugprone-dangling-handle'
+WarningsAsErrors: 'bugprone-use-after-move,bugprone-dangling-handle'
+HeaderFilterRegex: '(^|/)(src|include)/'

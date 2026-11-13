@@ -1,0 +1,10 @@
+/build*/
+/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+/vcpkg_installed/
+/CMakeUserPresets.json
+/.cache/
+/compile_commands.json

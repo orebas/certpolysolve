@@ -1,0 +1,6 @@
+p(x) = x^3 - (1152921504606846977/1152921504606846976)x^2 - x + 1152921504606846977/1152921504606846976
+degree=3 complete=1 goal_met=1 termination=0 outer_work_bits=335
+real=[-1 * 2^(0), -1 * 2^(0)] imag=[0 * 2^(0), 0 * 2^(0)] count=1 multiplicity=1 certificate=secular-identity-gershgorin-cover
+real=[13803492693581127574869511724554050903604143707946402026660220268183551 * 2^(-233), 13803492693581127574869511724554050907498366395368852254184742804520959 * 2^(-233)] imag=[0 * 2^(0), 0 * 2^(0)] count=1 multiplicity=1 certificate=secular-identity-gershgorin-cover
+real=[13803492693581127586842133137568807609528729862393894648796419287154687 * 2^(-233), 13803492693581127586842133137568807613422952540144938319403908425842687 * 2^(-233)] imag=[0 * 2^(0), 0 * 2^(0)] count=1 multiplicity=1 certificate=secular-identity-gershgorin-cover
+auto-route=secular (global); budgeted exact real squarefree preprocessing; persistent factor/component search; 8 work units; 0 pending components; stop=0

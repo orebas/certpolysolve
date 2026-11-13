@@ -1,0 +1,9 @@
+# ThreadSanitizer suppressions for the tsan test preset (CMakePresets.json; docs/thread-safety-audit-20261018.md).
+# Each entry names a race that is understood and harmless, with the reason. Nothing in CertPolySolve's own code is here.
+
+# FLINT 3.6's fmpz allocator (fmpz/link/fmpz_single.c, _fmpz_new_mpz) sets three process-global variables without
+# synchronisation each time a thread allocates a new block of mpz values. Every thread writes the same values (the
+# page size and what follows from it), so the race is benign (the audit's B2).
+race:flint_page_size
+race:flint_page_mask
+race:flint_mpz_structs_per_block

@@ -1,0 +1,7 @@
+# The public headers have no compile command of their own, so clangd borrows one from
+# a source with a similar name, which may lack the include path. Give them the library's include path and language.
+# The -I is relative to the borrowed command's directory, build/<preset>.
+If:
+  PathMatch: include/.*
+CompileFlags:
+  Add: [-I../../include, -xc++-header, -std=c++20]
