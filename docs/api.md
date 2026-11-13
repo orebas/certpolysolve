@@ -1270,8 +1270,8 @@ Degree=2;
 ## 13. Changes in 0.5
 
 The pre-0.5 interface (version 0.1.0-dev, ABI 1) changed as follows. The design is recorded in
-[the 0.5 specification](api-spec-0.5.md), its decisions and
-the C++ proposal.
+[the 0.5 specification](api-spec-0.5.md). Names are written with the current prefixes `cps_` and `CPS_`; before
+0.5.1, under the name PolySolve, they began with `ps_` and `PS_`.
 
 | Removed or renamed | Replacement |
 |---|---|

@@ -17,13 +17,13 @@ built `certpolysolve_cli` and run the script again.
   each root alone).
 - `time-by-degree.csv`: one line per solve of the test set's Auto queries that finished, from a timed run of the
   whole set on one core each (degree, wall-clock seconds, the kind of query). The columns come from the run's
-  records: `python3 docs/figures/time_by_degree.py CHECK_DIR` (a timed run's check folder, `
-  gate-records/checks/NAME`) writes the file and prints the table of how-it-works.md; the run itself is not
+  records: `python3 docs/figures/time_by_degree.py CHECK_DIR` (the check folder of a timed run, kept with the
+  project's records) writes the file and prints the table of how-it-works.md; the run itself is not
   reproducible from this folder.
 
 - `compare-small-dense.csv`: from the comparison of CertPolySolve with MPSolve, numpy.roots and PolynomialRoots.jl
-  (`benchmarks/headline/`; the record is `dev/docs/headline-benchmark-20261025.md`). Per degree and solver, over
+  (the project's benchmark harness, not in this repository). Per degree and solver, over
   five dense polynomials with coefficients drawn from [-1, 1], the median time of one solve call on one core (the
   median of three in-process repetitions), how many of the five each solver answered, and the median accuracy its
   roots reached in bits (53 for the solvers that prove it). Made by
-  `python3 benchmarks/headline/report.py CAMPAIGN --readme-csv docs/figures/data/compare-small-dense.csv`.
+  the harness's report script (`report.py CAMPAIGN --readme-csv docs/figures/data/compare-small-dense.csv`).
