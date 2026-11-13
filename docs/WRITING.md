@@ -2,9 +2,8 @@
 
 A style sheet for the pages a user reads: the README, the quick start, the examples, the guide, the how-it-works
 page, the mathematics, the spec and the changelog. It adapts the writing programme used for the project's papers to
-documentation. Internal notes (the handoff, the dated reports, the plans, all under `dev/`) are written for the
-people and agents working on CertPolySolve and follow their own conventions; none of their vocabulary or history belongs
-here, and `docs/` holds nothing but user pages.
+documentation. The project's internal notes are not part of this repository; none of their vocabulary or history
+belongs here, and `docs/` holds nothing but user pages.
 
 ## Who is reading
 
@@ -15,7 +14,7 @@ Three readers, in layers, and a page serves one of them:
 2. **Someone who wants to know what is proved and how.** The how-it-works page, the guide, the methods page and the
    mathematics are theirs: precise, defined before used, complete, still in plain words where plain words exist.
 3. **A program reading on someone's behalf.** The guide, the headers, the spec and the tested examples are its
-   sources, and `llms.txt` at the root says which files are authoritative and which are records.
+   sources.
 
 A page written for layer 1 never needs a word from layer 2 to be understood. A page for layer 2 may assume the
 reader has seen layer 1.
