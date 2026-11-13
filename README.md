@@ -8,7 +8,7 @@ The library was formerly called PolySolve.
 
 ## Install
 
-You need a C++20 compiler (GCC 15 and Clang 21 are tested, MSVC too; the examples print with C++23's
+You need a C++20 compiler (GCC 15 and Clang 21 are tested; MSVC was tested with 0.5.0; the examples print with C++23's
 `std::println`), CMake 3.20, and FLINT 3.6 or later with its thread support on, which is FLINT's default. Boost's
 headers are needed only for the tests.
 

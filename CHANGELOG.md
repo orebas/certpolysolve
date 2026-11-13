@@ -4,7 +4,7 @@
 
 - Renamed from PolySolve to CertPolySolve: namespace `certpolysolve`, headers `<certpolysolve/certpolysolve.hpp>`
   and `<certpolysolve/certpolysolve.h>`, CMake package `CertPolySolve` with target `CertPolySolve::certpolysolve`, C
-  prefixes `cps_` and `CPS_` (were `ps_` and `PS_`). The entries below 0.5.0 keep the names they shipped under.
+  prefixes `cps_` and `CPS_` (were `ps_` and `PS_`). Earlier entries keep the names they shipped under.
 - Licence: GNU LGPL, version 3 or later (was MIT).
 - `CPS_ROOT_ISOLATION` (`Goal::isolation()`) under Auto also accepts exact complex coefficient input. It returns
   each distinct root in a disjoint closed rectangle with its multiplicity, without requesting a width.
