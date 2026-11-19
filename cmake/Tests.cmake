@@ -179,6 +179,7 @@ target_include_directories(test_exact_complex PRIVATE src include "${CERTPOLYSOL
 target_link_libraries(test_exact_complex PRIVATE certpolysolve_core CertPolySolve::certpolysolve FLINT::FLINT Threads::Threads)
 add_test(NAME exact_complex COMMAND test_exact_complex)
 add_executable(test_factor_pass tests/test_factor_pass.cpp)
+target_compile_features(test_factor_pass PRIVATE cxx_std_20)
 target_include_directories(test_factor_pass PRIVATE src include)
 add_test(NAME factor_pass COMMAND test_factor_pass)
 
