@@ -11,7 +11,7 @@ jobs:
   build-and-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -20,10 +20,34 @@ jobs:
             runner: ubuntu-26.04
             cc: gcc-15
             cxx: g++-15
+            generator: Unix Makefiles
+            jobs: 4
+          - name: Linux x64 Clang
+            runner: ubuntu-26.04
+            cc: clang-21
+            cxx: clang++-21
+            generator: Unix Makefiles
+            jobs: 4
+          - name: Linux Arm64 GCC
+            runner: ubuntu-26.04-arm
+            cc: gcc-15
+            cxx: g++-15
+            generator: Unix Makefiles
+            jobs: 4
+          - name: macOS Arm64 Apple Clang
+            runner: macos-26
+            cc: clang
+            cxx: clang++
+            generator: Unix Makefiles
+            jobs: 3
+          - name: Windows x64 MSVC
+            runner: windows-2025
+            generator: Visual Studio 17 2022
             jobs: 4
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
+      CMAKE_GENERATOR: ${{ matrix.generator }}
       BUILD_JOBS: ${{ matrix.jobs }}
 
     steps:
@@ -31,14 +55,30 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install FLINT and Boost
+      - name: Install FLINT and Boost with Homebrew
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          fi
           brew install flint boost
           brew list --versions flint boost
           printf 'FLINT_ROOT=%s\n' "$(brew --prefix flint)" >> "$GITHUB_ENV"
           printf 'CMAKE_PREFIX_PATH=%s\n' "$(brew --prefix)" >> "$GITHUB_ENV"
+
+      - name: Install FLINT and Boost with vcpkg
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg.exe'
+          & $vcpkg install flint boost-multiprecision --triplet x64-windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $vcpkg list
+          $prefix = Join-Path $env:VCPKG_INSTALLATION_ROOT 'installed/x64-windows'
+          "FLINT_ROOT=$prefix" >> $env:GITHUB_ENV
+          "CMAKE_PREFIX_PATH=$prefix" >> $env:GITHUB_ENV
+          (Join-Path $prefix 'bin') >> $env:GITHUB_PATH
 
       - name: Configure Release
         shell: bash
