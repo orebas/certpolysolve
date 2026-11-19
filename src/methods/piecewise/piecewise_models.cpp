@@ -537,8 +537,8 @@ ModelTask model_stream(const acb_poly_t p, slong bits, slong precision,
             roots=angular_grid(ring,precision,config);
             stats.work.grid += static_cast<double>(ring.sectors) * operation_weight(precision);
         }
-        const size_t capacity = std::min(ring.sectors,
-            (config.model_storage_bytes - static_cast<size_t>(scratch_estimate)) / per_model);
+        const size_t capacity = static_cast<size_t>(std::min<uint64_t>(ring.sectors,
+            (config.model_storage_bytes - scratch_estimate) / per_model));
         const slong count = static_cast<slong>(ring.sectors);
         RootVector weights(delta + 1), groups(count), values(count);
         std::unique_ptr<ModelTransform> transform;

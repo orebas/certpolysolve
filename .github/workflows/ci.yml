@@ -2,7 +2,7 @@ name: Portability trial
 
 on:
   push:
-    branches: [ci/portability-trial]
+    branches: [ci/portability-macos]
 
 permissions:
   contents: read
@@ -16,34 +16,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Linux x64 GCC
-            runner: ubuntu-26.04
-            cc: gcc-15
-            cxx: g++-15
-            generator: Unix Makefiles
-            jobs: 4
-          - name: Linux x64 Clang
-            runner: ubuntu-26.04
-            cc: clang-21
-            cxx: clang++-21
-            generator: Unix Makefiles
-            jobs: 4
-          - name: Linux Arm64 GCC
-            runner: ubuntu-26.04-arm
-            cc: gcc-15
-            cxx: g++-15
-            generator: Unix Makefiles
-            jobs: 4
           - name: macOS Arm64 Apple Clang
             runner: macos-26
             cc: clang
             cxx: clang++
             generator: Unix Makefiles
             jobs: 3
-          - name: Windows x64 MSVC
-            runner: windows-2022
-            generator: Visual Studio 17 2022
-            jobs: 4
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
