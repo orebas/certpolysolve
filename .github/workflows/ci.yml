@@ -25,6 +25,7 @@ jobs:
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       CMAKE_GENERATOR: ${{ matrix.generator }}
       BUILD_JOBS: ${{ matrix.jobs }}
 
@@ -60,7 +61,9 @@ jobs:
 
       - name: Configure Release
         shell: bash
-        run: cmake -S . -B build/ci -DCMAKE_BUILD_TYPE=Release -DFLINT_ROOT="$FLINT_ROOT"
+        run: |
+          xcodebuild -version
+          cmake -S . -B build/ci -DCMAKE_BUILD_TYPE=Release -DFLINT_ROOT="$FLINT_ROOT"
 
       - name: Build
         id: build
