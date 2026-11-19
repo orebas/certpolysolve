@@ -36,7 +36,7 @@ src/
     secular/            native secular-equation representation
     program/            owned program graph and parsing
   core/                 values, RAII ownership, contracts and resource accounting
-  platform/             parallel work and floating-point environment
+  platform/             parallel work, floating-point environment, kernel variants
   internal.hpp          convenience include for tests/tools only
 ```
 

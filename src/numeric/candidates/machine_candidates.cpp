@@ -24,7 +24,8 @@
 // experimental tiers, the JIT, compensated evaluation) to its copy of this engine as it was before W8's S10
 // (prepare_research_machine_engine, research/solvers/machine_methods.cpp).
 // Not here: the certificates (the callers' routes), the evaluators (candidate_jets.hpp), the tree
-// (interaction_tree.hpp), the correction's and the sums' terms' operations (aberth_step.hpp), the multiprecision
+// (interaction_tree.hpp), the correction's and the sums' terms' operations (aberth_step.hpp), the four-point and
+// four-term kernels (horner_kernel.hpp, interaction_kernel.hpp; platform/kernel_variant.hpp), the multiprecision
 // packets (candidates.cpp), the companion engines (research/solvers/).
 // Design notes: docs/campaign-c3-algorithms.md (methods, tiers), docs/fast-methods-assessment-20261008.md (the tree).
 #include "core/query.hpp"
@@ -32,6 +33,7 @@
 #include "numeric/candidates/aberth_step.hpp"
 #include "numeric/candidates/candidate_jets.hpp"
 #include "core/heuristics.hpp"
+#include "numeric/candidates/interaction_kernel.hpp"
 #include "numeric/candidates/interaction_tree.hpp"
 #include "numeric/candidates/machine_adapter.hpp"
 #include "platform/parallel.hpp"
@@ -160,6 +162,10 @@ template <class R> class MachineEngine final : public NumericalEngine {
             ~Restore() { std::fesetenv(value); }
         } restore{&environment};
         backup_ = points_;
+#ifdef CERTPOLYSOLVE_HAVE_AVX2_FMA_KERNELS
+        // Whether the direct interaction sums take their terms four at a time (binary64 only).
+        [[maybe_unused]] const bool direct_groups = kernel_variant() == KernelVariant::Avx2Fma;
+#endif
         for (unsigned sweep = 0; sweep < sweeps; ++sweep) {
             double largest = -std::numeric_limits<double>::infinity();
             std::unique_ptr<MachineInteractionTree> tree;
@@ -194,8 +200,11 @@ template <class R> class MachineEngine final : public NumericalEngine {
                 const size_t count = points_.size();
                 const auto evaluate_range = [&](size_t first, size_t last) {
                     if (newton_evaluator_) {
-                        for (size_t j = first; j < last; ++j)
-                            if (stops_[j] == Stop::Active) newton_values_[j] = newton_evaluator_->evaluate(points_[j]);
+                        // Each active point's evaluate, the dense loops four points at a time where the CPU allows
+                        // (PreparedNewton::evaluate_range: the same values and flags).
+                        newton_evaluator_->evaluate_range(points_, first, last,
+                                                          [&](size_t j) { return stops_[j] == Stop::Active; },
+                                                          newton_values_);
                     } else
                         for (size_t j = first; j < last; ++j)
                             if (stops_[j] == Stop::Active) jets_[j] = evaluator_->evaluate(points_[j]);
@@ -216,6 +225,12 @@ template <class R> class MachineEngine final : public NumericalEngine {
                 if (!newton_evaluator_)
                     statistics.evaluation_terms += active * evaluator_->terms();
             }
+            // The sweep's moves, under one timer: each active point's interaction sum, its correction and its poll.
+            // Until 17 November 2026 the timer stood around each point's sum, two readings of the clock a point and
+            // sweep: 38 ns on the reference machine, the time of a direct sum over 34 points once the sums' terms
+            // came four at a time (dev/docs/simd-kernels-20261117.md, the second round). interaction_ns therefore
+            // holds a few operations a point besides the sums. No answer or counter reads a timer.
+            StageTimer interaction_timer(statistics.interaction_ns);
             for (size_t i = 0; i < points_.size(); ++i) {
                 if (options.cancelled()) {
                     out.candidates.cancelled = true;
@@ -281,7 +296,6 @@ template <class R> class MachineEngine final : public NumericalEngine {
                     newton = value / derivative;
                 C sum;
                 {
-                    StageTimer interaction_timer(statistics.interaction_ns);
                     bool summed = false;
                     if constexpr (std::is_same_v<R, double>) {
                         std::complex<double> far;
@@ -305,16 +319,34 @@ template <class R> class MachineEngine final : public NumericalEngine {
                             summed = true;
                         }
                     }
-                    for (size_t j = 0; !summed && j < points_.size(); ++j)
-                        if (j != i) {
+                    // The direct sum: the neighbours below i, then those above it, j ascending, one accumulator.
+                    // In binary64, where the CPU has the instructions, the terms are made four neighbours at a time
+                    // and added in the same order (interaction_kernel: the same bits and flags); what is left of a
+                    // range, and a group that holds a point equal to z, goes a term at a time.
+                    const auto add_terms = [&](size_t first, size_t last) {
+                        size_t j = first;
+#ifdef CERTPOLYSOLVE_HAVE_AVX2_FMA_KERNELS
+                        if constexpr (std::is_same_v<R, double>) {
+                            if (direct_groups) {
+                                j = machine::interaction_kernel::add_groups(points_.data(), first, last, z.re, z.im,
+                                                                           sum.re, sum.im);
+                                statistics.root_interactions += j - first;
+                            }
+                        }
+#endif
+                        for (; j < last; ++j) {
                             const C difference = z - points_[j];
                             if (difference == C{}) {
                                 out.arithmetic_failure = true;
-                                break;
+                                return false;
                             }
                             sum += machine::interaction_term(difference);
                             ++statistics.root_interactions;
                         }
+                        return true;
+                    };
+                    if (!summed && add_terms(0, i))
+                        add_terms(i + 1, points_.size());
                     if constexpr (binary64_exponent<R>)
                         if (!logarithmic &&
                             newton_exponent + field_exponent(sum) + complex_bound_log2 > representable_exponent) {

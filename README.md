@@ -98,10 +98,10 @@ consulted are in [licenses/](licenses/).
 
 ## Status
 
-This is version 0.5.1, the first under the name CertPolySolve; version 0.5.0 was released as PolySolve.
-The [changelog](CHANGELOG.md) lists the changes.
+This is version 0.6.0. Version 0.5.1 was the first under the name CertPolySolve; version 0.5.0 was
+released as PolySolve. The [changelog](CHANGELOG.md) lists the changes.
 
-0.5.1 is tested on Linux with GCC and Clang; 0.5.0 was also tested on Windows with MSVC. macOS is untested. The C and C++
+0.6.0 is tested on Linux with GCC and Clang; 0.5.0 was also tested on Windows with MSVC. macOS is untested. The C and C++
 interfaces ship today; Python and Julia packages come later. Before 1.0 a release may change the API.
 
 CertPolySolve is free software under the GNU Lesser General Public License, version 3 or (at your option) any later

@@ -1,5 +1,5 @@
 #pragma once
-// The fuzz case model shared by certpolysolve_fuzz and the trace probe: seeded
+// The fuzz case model shared by the fuzz harness and the trace probe: seeded
 // generation, exact polynomial construction and the replayable case file.
 // Generation must stay identical for a given harness_version.
 //

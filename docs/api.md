@@ -1226,7 +1226,7 @@ destroy functions.
 
 | C | C++ | |
 |---|---|---|
-| `CPS_VERSION_MAJOR` 0, `CPS_VERSION_MINOR` 5, `CPS_VERSION_PATCH` 1, `CPS_VERSION_STRING` "0.5.1" | the same macros | the version of the headers |
+| `CPS_VERSION_MAJOR` 0, `CPS_VERSION_MINOR` 6, `CPS_VERSION_PATCH` 0, `CPS_VERSION_STRING` "0.6.0" | the same macros | the version of the headers |
 | `cps_version()` | `certpolysolve::version()` | the library's version string: `CPS_VERSION_STRING` of the headers it was built with |
 | `CPS_ABI_VERSION` (2), `cps_abi_version()` | `certpolysolve::abi_version()` | the binary interface's number, raised whenever it changes; informational |
 | `cps_backend_version()` | `certpolysolve::backend_version()` | FLINT's version string |

@@ -1,9 +1,12 @@
 #pragma once
 #include <array>
 #include "numeric/arithmetic/machine_arithmetic.hpp"
+#include "numeric/candidates/horner_kernel.hpp"
+#include "platform/kernel_variant.hpp"
 #include <bit>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 namespace certpolysolve::detail::machine {
@@ -76,6 +79,11 @@ template <class R, unsigned Order = 2> class PreparedJets {
     size_t terms() const {
         return indices_.size() * 4 < coefficients_.size() ? indices_.size() : coefficients_.size();
     }
+    // Whether evaluate takes its dense loop, and that loop's arrays (for horner_kernel, which runs it at several
+    // points at a time).
+    bool dense() const { return !coefficients_.empty() && terms() == coefficients_.size(); }
+    std::span<const C> coefficients() const { return coefficients_; }
+    std::span<const R> magnitudes() const { return magnitudes_; }
     size_t storage_bytes() const {
         // The power tables counted as the vectors they were (one entry a bit of the largest gap), so the
         // storage the resource checks see is unchanged.
@@ -179,10 +187,96 @@ template <class R> class PreparedNewton {
         const auto p = forward_.evaluate(z);
         return {p.value, p.derivative, C(R(1)), p.absolute_sum, forward_.terms()};
     }
+    // evaluate(points[j]) into out[j] for every j in [first, last) that `active` admits: the same values. In binary64,
+    // where the CPU has the instructions (platform/kernel_variant.hpp), the dense loops run at horner_kernel::group
+    // points at a time, the points inside the unit circle together and those outside it together; everything about a
+    // point outside the loop (which side, 1/z, the norm, the factored ratio's fields) is evaluate's own operations.
+    // It writes nothing of the object and only its own slots of `out`, so ranges may run at once on several threads.
+    template <class Active>
+    void evaluate_range(std::span<const C> points, size_t first, size_t last, Active &&active,
+                        std::span<NewtonEvaluation<R>> out) const {
+#ifdef CERTPOLYSOLVE_HAVE_AVX2_FMA_KERNELS
+        if constexpr (std::is_same_v<R, double>) {
+            if (kernel_variant() == KernelVariant::Avx2Fma && (forward_.dense() || backward_.dense())) {
+                evaluate_range_grouped(points, first, last, active, out);
+                return;
+            }
+        }
+#endif
+        for (size_t j = first; j < last; ++j)
+            if (active(j))
+                out[j] = evaluate(points[j]);
+    }
     size_t storage_bytes() const {
         return forward_.storage_bytes() + backward_.storage_bytes() +
                reversed_coefficients_.capacity() * sizeof(C);
     }
+
+  private:
+#ifdef CERTPOLYSOLVE_HAVE_AVX2_FMA_KERNELS
+    // The points waiting for one call of the kernel on one side of the unit circle: their indices, and where the
+    // loop runs (z inside, w = 1/z outside) with the norm of that point.
+    struct Waiting {
+        size_t index[horner_kernel::group];
+        double re[horner_kernel::group], im[horner_kernel::group], radius[horner_kernel::group];
+        size_t count = 0;
+    };
+    // The kernel on the waiting points (a group that is not full repeats its last point: each of the kernel's
+    // results is a function of its own point alone, and a copy raises no flag the point does not), then evaluate's
+    // return value at each.
+    void run(Waiting &waiting, bool outside, std::span<const C> points, std::span<NewtonEvaluation<R>> out) const {
+        if (!waiting.count)
+            return;
+        for (size_t m = waiting.count; m < horner_kernel::group; ++m) {
+            waiting.re[m] = waiting.re[waiting.count - 1];
+            waiting.im[m] = waiting.im[waiting.count - 1];
+            waiting.radius[m] = waiting.radius[waiting.count - 1];
+        }
+        const PreparedJets<R, 1> &jets = outside ? backward_ : forward_;
+        horner_kernel::Sums sums[horner_kernel::group];
+        horner_kernel::avx2(jets.coefficients().data(), jets.magnitudes().data(), jets.coefficients().size(),
+                            waiting.re, waiting.im, waiting.radius, sums);
+        for (size_t m = 0; m < waiting.count; ++m) {
+            const C value(sums[m].value_re, sums[m].value_im), derivative(sums[m].derivative_re, sums[m].derivative_im);
+            const size_t j = waiting.index[m];
+            if (outside) {
+                // p/p' = z*q(w) / (n*q(w)-w*q'(w)), w=1/z: evaluate's expression.
+                const C w(waiting.re[m], waiting.im[m]);
+                out[j] = {value, C(R(static_cast<double>(degree_))) * value - w * derivative, points[j],
+                          sums[m].absolute_sum, backward_.terms()};
+            } else {
+                out[j] = {value, derivative, C(R(1)), sums[m].absolute_sum, forward_.terms()};
+            }
+        }
+        waiting.count = 0;
+    }
+    template <class Active>
+    void evaluate_range_grouped(std::span<const C> points, size_t first, size_t last, Active &&active,
+                                std::span<NewtonEvaluation<R>> out) const {
+        const bool forward_dense = forward_.dense(), backward_dense = backward_.dense();
+        Waiting inside, outside;
+        const auto add = [&](Waiting &waiting, bool is_outside, size_t j, C at) {
+            waiting.index[waiting.count] = j;
+            waiting.re[waiting.count] = at.re;
+            waiting.im[waiting.count] = at.im;
+            waiting.radius[waiting.count] = norm(at);
+            if (++waiting.count == horner_kernel::group)
+                run(waiting, is_outside, points, out);
+        };
+        for (size_t j = first; j < last; ++j) {
+            if (!active(j))
+                continue;
+            const C z = points[j];
+            const bool is_outside = R(1) < norm(z);
+            if (!(is_outside ? backward_dense : forward_dense))
+                out[j] = evaluate(z);
+            else
+                add(is_outside ? outside : inside, is_outside, j, is_outside ? C(R(1)) / z : z);
+        }
+        run(inside, false, points, out);
+        run(outside, true, points, out);
+    }
+#endif
 };
 
 template <class R> Complex<R> laguerre_step(const Jet<R> &q, size_t degree) {

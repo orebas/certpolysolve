@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.6.0 (19 November 2026)
+
+- Faster solves from about degree 64 up, with the same answers: on x86-64 CPUs with AVX2 and FMA the binary64
+  iteration's evaluations and interaction sums and the first certificate's evaluations and bounds run on several
+  points at a time (three tenths of the time at degree 1,024 on dense input). Every other CPU runs the same scalar
+  code as before, and both give the same bits.
+- On input with real coefficients the fast certificate pass proves one root of each conjugate pair and gives the
+  other the mirror image of its box. Mirror images stand only where the pass finishes: an input on which it leaves
+  a root for the slower methods is solved as before. A mirrored box says so in its certificate ("reflected in the
+  real axis").
+  Random real input solves in 0.86 to 0.92 of the time from degree 16 to 4,096 and in 0.93 to 0.96 at degree 5 to
+  8; sparse real input of degree 16,384 in 0.77 to 0.83. Input with only real roots is solved as before. So is
+  input with a non-real coefficient, unless the solver first reduces it to real coefficients by an exact change of
+  variable.
+- Auto tries the fast binary64 pass before the piecewise method on more dense inputs. It prices the pass's
+  certificates as the compensated certificate they have been since October, one evaluation a point in the scalar
+  code, where it priced two ball evaluations. Dense inputs of degree about 5,400 to 10,000 with random
+  coefficients finish in about a sixth of the time (0.06 to 0.27 of it on the thirteen measured). An input in
+  that range on which the pass fails pays for the pass first: about a second where it has more close roots than
+  the pass repairs, and 1.5 to 1.7 times the time before on inputs that are ill-conditioned on a whole arc of the
+  unit circle (measured on probes). Every answer is certified as before.
+- On x86-64 CPUs with AVX2 and FMA, Auto tries the fast binary64 pass before the piecewise method on dense inputs
+  of higher degree: on random coefficients to somewhere between degree 33,000 and 65,000, where the limit was
+  about 10,000. It prices the pass as those CPUs run it. Dense inputs of degree 11,600 to 32,800 with random
+  coefficients finish in 0.13 to 0.31 of the time. An input in that range on which the pass fails pays for the
+  pass first: 1.1 to 1.3 times the time before on inputs with clusters of close roots (2.4 to 4.1 s more at
+  degree 16,384 and 8 to 14 s more at 32,768 on the inputs timed; no upper bound is established). The pass ends
+  early there when its first certificate leaves more than a thirty-fourth of the roots. This is the one place
+  where the method Auto tries first depends on the CPU, so the bits of Auto's answer can differ between two
+  CPUs, each answer as certified as the other. The diagnostics say when
+  (`certificate-attempt-before-piecewise-at-avx2-fma-prices`). In this version a forced method still returns the
+  same bits on every CPU, so a caller who needs the same answer on every machine forces a method; that is how the
+  kernels are today, not a guarantee for later versions.
+- The fast binary64 pass finishes more inputs that have a few close roots among many well-separated ones. Its
+  step for close roots ran only when at most 16 points had failed the first certificate. Points fail that
+  certificate for other reasons too, in a number that grows with the degree, and they counted against the 16. Now
+  the 16 counts the points in clusters alone, and the points that failed altogether may be up to one in 64. Up to
+  degree 1,087 nothing changes. An input of degree 8,208 with eight pairs of roots 2^-45 apart solves in 1.1 s
+  where it took 6.7 s. Every answer is certified as before.
+
 ## 0.5.1 (12 November 2026)
 
 - Renamed from PolySolve to CertPolySolve: namespace `certpolysolve`, headers `<certpolysolve/certpolysolve.hpp>`

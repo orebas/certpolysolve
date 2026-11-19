@@ -2,6 +2,7 @@
 #include <optional>
 #include "input/coefficients/polynomial_input.hpp"
 #include "core/query.hpp"
+#include "platform/kernel_variant.hpp"
 
 namespace certpolysolve::detail {
 // Auto route from the selector campaign (docs/selector-campaign-20260928.md),
@@ -26,6 +27,12 @@ struct AutoSelection {
     // With route Piecewise: piecewise's predicted cost, its admission's work in complex coefficient operations
     // (exact), which bounds the attempt before it (PiecewiseRootConfig::certificate_attempt_fallback).
     uint64_t piecewise_operations = 0;
+    // With attempt_first: the kernel variant whose prices put the attempt first. The reference's wherever the
+    // reference's prices do, on every CPU; another variant's only where the reference's would not have.
+    KernelVariant attempt_prices = KernelVariant::Reference;
+    // The most points that attempt's compensated tier may pass on before the attempt ends
+    // (heuristics::attempt_pass_limit); zero, no limit, where the reference's prices put the attempt first.
+    uint64_t attempt_pass_limit = 0;
 };
 
 // prove_squarefree false leaves out piecewise admission's square-free proof (PiecewiseAdmissionPolicy): the route

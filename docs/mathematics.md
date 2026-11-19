@@ -180,10 +180,30 @@ combination. Every route certifies its output against the original input.
   it may put that attempt first (`attempt_first`,
   `PiecewiseRootConfig::certificate_attempt`). Its price `A`, in the
   estimate's unit, is `n` times `certificate_attempt_point_operations`
-  (`src/heuristics.hpp`): the packet's first quantum (`machine_cover_sweeps`
-  sweeps, an upper bound) and the certificates' two evaluations of value and
-  slope at each point. The attempt goes first when `W >= phi A`,
+  (`src/core/heuristics.hpp`): the packet's first quantum
+  (`machine_cover_sweeps` sweeps, an upper bound) and the certificate at each
+  point. For a dense polynomial that is the compensated tier's one
+  evaluation with its bounds (see "The certificate attempt"); for a sparse
+  one, the ball certificate's two evaluations of value and slope. Both are
+  priced first as the scalar code runs them, and that price decides in the
+  same way on every CPU: the attempt goes first when `W >= phi A`,
   `phi = (1+sqrt(5))/2` (`certificate-attempt-before-piecewise`).
+
+  Where that leaves piecewise first and the CPU runs a kernel variant (AVX2
+  and FMA), the rule is asked once more with the variant's prices of the
+  three loops that are its kernels (`heuristics::AttemptPrices`): a term of
+  the dense evaluation at a quarter of an operation, a pair of the direct
+  interaction sum at a half, the compensated certificate at 2 operations a
+  coefficient for 14. Where they put the attempt first
+  (`certificate-attempt-before-piecewise-at-avx2-fma-prices`), the attempt
+  ends if its compensated tier passes on more than a thirty-fourth of the
+  points (`heuristics::attempt_pass_limit`): those points go to the ball
+  certificate, which is no kernel, and past that count their pass costs more
+  than the tier's pass over every point did. No setting turns this off.
+  A caller who needs the same answer on every machine forces a method:
+  today a forced method returns the same bits on every CPU, because every
+  kernel variant returns the reference's bits. That is the present state
+  of the kernels and not a guarantee.
 
   In an idealized two-attempt model, this order minimizes the worst-case ratio.
   Suppose the attempt costs `A` and
@@ -227,7 +247,14 @@ combination. Every route certifies its output against the original input.
   contraction; nothing uses `long double` or the platform's transcendental
   functions. So a query takes the same route on every platform
   (the note); a binary64
-  comparison departs from the exact statement only at a near-tie.
+  comparison departs from the exact statement only at a near-tie. One order
+  is the exception: whether the certificate attempt goes before piecewise
+  may be decided by a kernel variant's prices, so on some dense inputs of
+  high degree it depends on whether the CPU has AVX2 and FMA (above). The
+  diagnostics name the variant where it decided. Today every variant
+  returns the reference's bits, so what a forced method returns does not
+  depend on the CPU; a later variant may return other bits, each answer
+  certified with a bound that holds for the operations it runs.
 
 A wrong route therefore costs time only, and piecewise limits that time: its
 regime exit (`regime_exit_due`, `src/piecewise_roots.cpp`) hands the original
@@ -445,6 +472,71 @@ terms. The packet's quanta come off it, and the balance, as evaluations at the
 first precision weighted by `operation_weight`, is charged with the certificate
 evaluations at theirs; a round takes only the refused points it still pays for.
 The prices decide what is tried, never what is proved.
+
+### Conjugate pairs on real coefficients
+
+On a source whose coefficient balls are all real (`MonicSource::real`: every
+imaginary part exactly zero), and outside a retry, the attempt certifies one
+point of each conjugate pair of points and gives the other the reflection of
+the region it proved, in a cover that it completes. Every polynomial of the
+family has real coefficients, so
+its roots are closed under conjugation with their multiplicities: the mirror
+image in the real axis of a rectangle that holds exactly one root holds exactly
+one root, and the mirror image of a square that holds at least one holds at
+least one. The reflected region is the proved one with its ball conjugated and
+its imaginary ends exchanged and negated (`reflected`). It is taken only from
+a region that lies strictly on one side of the axis, so the two are disjoint.
+Its certificate is the proved region's, followed by `, reflected in the real
+axis from the conjugate root's rectangle`.
+
+Which two points are a pair is a guess from their places (`conjugate_partners`,
+`src/certify/attempts/conjugate_pairs.hpp`): one point strictly above the axis
+and one strictly below, their real parts and the sizes of their imaginary parts
+each within `2^-26` (`conjugate_pair_bits`) of the larger point's size, and
+each the other's only such candidate. Nothing proved depends on the guess. The
+cover's rule is the one above: `n` regions, pairwise disjoint, each holding at
+least one of the `n` roots, hold exactly one each. A wrong pair puts a second
+region on a root that another point's region holds; the two meet, and the
+reflections are not taken. A pair the guess misses is certified point by point.
+
+A reflection stands only in a completed cover. The compensated tier's pass
+takes reflections as it goes. It is asked about the first point of each pair
+and about the points without a partner. A second point takes the reflection of
+a rectangle the tier proved clear of the axis and is never asked; otherwise the
+tier is asked about it. The double-double repair works on the points the tier
+passed on, and the ball certificate on the few it leaves. If every point then
+holds a region, the cover is complete.
+
+The tier sometimes proves one point of a pair and passes the other on. A point
+passed on is one that the repair and the ball certificate work on, with pairs
+or without, so it takes its partner's reflection only where that completes the
+cover at once: every point passed on has a proved partner, or the repair
+proves the others. A repair tried for this that does not prove them all is
+undone.
+
+An attempt that will not complete first replaces every reflection by the
+point's own certificate (`unreflect`): before the cluster start runs a group,
+when the ball certificate's pass leaves a point refused, and before a refused
+cover is handed back. The point goes back to where the packet left it, and the
+tier is asked about it at the precision of its pass. The tier's answer at a
+point depends on the point and that precision alone, so the certificate is the
+one the point has on a source that is not real. What the attempt hands to its
+rounds and to the method that follows is then what it hands on without pairs.
+A cover whose regions meet with reflections among them (a wrong pair) is
+judged again after the same replacement.
+
+Where the tier proves nothing (a sparse source, a goal beyond binary64), the
+ball certificate's pass holds back the second point of a pair whose partner it
+has proved clear of the axis, as long as it has refused no point. If it ends
+without a refusal, the points held back take the reflections, provided the
+cover with them is disjoint. At the first refusal they are asked themselves,
+each at the precision the pass had at its turn, and no point is held back
+after it.
+
+Where the solver worked in another variable, after an exact shift or a power
+composition, the published region is the reflection carried through that
+change of variable, as the chain of its certificate says; it is then not the
+mirror image of another published region about the real axis.
 
 ## Local counts and candidate-guided recovery
 

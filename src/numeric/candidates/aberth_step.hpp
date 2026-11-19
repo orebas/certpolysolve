@@ -13,8 +13,10 @@
 // kernel's lines.
 // - MachineEngine<R>::advance (machine_candidates.cpp; binary64 and ScaledDouble): Gauss-Seidel, each point moved
 //   before the next is summed. N from PreparedNewton in binary64 (the reversed polynomial above |z| = 1), from
-//   PreparedJets in ScaledDouble. S by interaction_term, one accumulator, j ascending; or, in binary64 from
-//   heuristics::machine_interaction_tree_degree points, a MachineInteractionTree's far field and its near terms.
+//   PreparedJets in ScaledDouble. S by interaction_term, one accumulator, j ascending (in binary64 the terms of four
+//   neighbours at a time where the CPU has AVX2, interaction_kernel.hpp: the same operations and the same order of
+//   the sum); or, in binary64 from heuristics::machine_interaction_tree_degree points, a MachineInteractionTree's far
+//   field and its near terms.
 //   aberth_correction, or logarithmic_aberth_correction where p' is zero or the exponent fields put N or N S beyond
 //   binary64's range (without it a five-term input lost its packet: machine_candidates.cpp 4). A point stops at a
 //   relative step below 2^-45 or at |p| below Horner's noise; in binary64 an N that is not finite ends the packet

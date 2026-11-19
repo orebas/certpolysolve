@@ -905,7 +905,7 @@ typedef enum cps_stop_reason {
 
 | C | C++ | Meaning |
 |---|---|---|
-| `#define CPS_VERSION_MAJOR 0`, `CPS_VERSION_MINOR 5`, `CPS_VERSION_PATCH 1`, `CPS_VERSION_STRING "0.5.1"` | the same macros | The version of the headers. |
+| `#define CPS_VERSION_MAJOR 0`, `CPS_VERSION_MINOR 6`, `CPS_VERSION_PATCH 0`, `CPS_VERSION_STRING "0.6.0"` | the same macros | The version of the headers. |
 | `const char *cps_version(void)` | `const char *version()` | The library's version, the same string as `CPS_VERSION_STRING` in the headers it was built with. It is static. |
 | `#define CPS_ABI_VERSION 2u`; `uint32_t cps_abi_version(void)` | `uint32_t abi_version()` | Informational. Raised whenever the binary interface changes. |
 | `const char *cps_backend_version(void)` | `const char *backend_version()` | FLINT's version string. |

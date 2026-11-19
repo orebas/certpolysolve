@@ -3,6 +3,7 @@
 // describe a solve without depending on its controller, models or statistics layout.
 #include "core/cover.hpp"
 #include "core/resource_limits.hpp"
+#include "platform/kernel_variant.hpp"
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -170,6 +171,14 @@ struct PiecewiseRootConfig {
     // auto_selection.cpp): the attempt before it may spend no more (machine_newton_cover's fallback_operations).
     // Zero: the global recipes' minimum budget.
     uint64_t certificate_attempt_fallback = 0;
+    // The most points that attempt's compensated tier may pass on to the ball certificate before the attempt ends
+    // (machine_newton_cover's pass_limit). Zero: no limit. Set where a kernel variant's prices, and not the
+    // reference's, put the attempt first (AutoSelection::attempt_pass_limit).
+    uint64_t certificate_attempt_pass_limit = 0;
+    // The kernel variant whose prices put that attempt first (AutoSelection::attempt_prices). Where it is not the
+    // reference, the attempt's packet is charged at that variant's price (machine_newton_cover's packet_prices):
+    // the allowance is piecewise's estimate, which those prices were weighed against.
+    KernelVariant certificate_attempt_prices = KernelVariant::Reference;
     // Qualified singleton guard optimization; false retains the private control.
     // Refusals use value/slope first; successful proofs keep the complete jet.
     bool lazy_guard_jet = false;

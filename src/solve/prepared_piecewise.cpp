@@ -251,7 +251,11 @@ struct PreparedPiecewiseState::Impl {
         // attempt may spend what the selector predicts it costs.
         const bool certified = machine_newton_cover(cover, source, nullptr, options, precision, true, attempt_statistics,
                                                     true, nullptr, nullptr, nullptr, &certified_at, false, nullptr, {},
-                                                    config.certificate_attempt_fallback);
+                                                    config.certificate_attempt_fallback,
+                                                    config.certificate_attempt_pass_limit,
+                                                    config.certificate_attempt_prices == KernelVariant::Avx2Fma
+                                                        ? &heuristics::avx2_fma_attempt_prices
+                                                        : nullptr);
         if (!certified || options.cancelled())
             return false;
         const slong bits = std::max(precision, certified_at);

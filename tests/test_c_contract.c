@@ -21,7 +21,7 @@ static int versions(void) {
     char expected[32];
     snprintf(expected, sizeof expected, "%d.%d.%d", CPS_VERSION_MAJOR, CPS_VERSION_MINOR, CPS_VERSION_PATCH);
     CHECK(strcmp(cps_version(), CPS_VERSION_STRING) == 0);
-    CHECK(strncmp(CPS_VERSION_STRING, expected, strlen(expected)) == 0); /* "0.5.0" or "0.5.0-dev" */
+    CHECK(strncmp(CPS_VERSION_STRING, expected, strlen(expected)) == 0); /* "0.6.0" or "0.6.0-dev" */
     CHECK(cps_abi_version() == CPS_ABI_VERSION && CPS_ABI_VERSION == 2u);
     CHECK(cps_backend_version() != NULL && cps_backend_version()[0] != '\0');
     return 0;

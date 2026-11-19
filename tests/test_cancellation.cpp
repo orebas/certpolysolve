@@ -36,7 +36,7 @@ certpolysolve::Options slow_options() {
 void versions() {
     require(std::strcmp(cps_version(), CPS_VERSION_STRING) == 0, "the library's version is not the headers'");
     require(std::strcmp(certpolysolve::version(), CPS_VERSION_STRING) == 0, "the C++ version is not the C one");
-    require(CPS_VERSION_MAJOR == 0 && CPS_VERSION_MINOR == 5, "the version macros");
+    require(CPS_VERSION_MAJOR == 0 && CPS_VERSION_MINOR == 6, "the version macros");
 }
 
 void last_error_is_cleared() {

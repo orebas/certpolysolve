@@ -339,13 +339,47 @@ inline constexpr unsigned double_double_refine_steps = 40;
 //   a sum over all n points, so the repair is for a few clusters, not for a cover that failed wholesale (the ball
 //   certificate and its rounds take those, as before).
 inline constexpr size_t double_double_refine_points = 16;
-// The cluster start's scope (certificate_attempt.cpp, machine_newton_cover): the double-double repair's, a few clusters,
-// not a cover that failed wholesale. The start takes its groups one by one, each a packet whose members interact with
-// all n points at the cluster's precision, then their certificates; where many points are refused the pass, the
-// rounds and the caller's route take them together (the third gate of the start: clustered-256, 208 refused points,
-// its groups certified one by one in 0.56 s where the secular route takes 0.14 s; clustered-512 465, sos-near-axis-512
-// 512, against 3 to 6 on the degree-8 and degree-32 clusters the start was built for).
-inline constexpr size_t cluster_start_points = double_double_refine_points;
+// The cluster start's scope (certificate_attempt.cpp, machine_newton_cover): a few clusters, not a cover that failed
+// wholesale. The start takes its groups one by one, each a packet whose members interact with all n points at the
+// cluster's precision, then their certificates; where many points are refused the pass, the rounds and the caller's
+// route take them together (the third gate of the start: clustered-256, 208 refused points, its groups certified one
+// by one in 0.56 s where the secular route takes 0.14 s; clustered-512 465, sos-near-axis-512 512, against 3 to 6 on
+// the degree-8 and degree-32 clusters the start was built for).
+// The count is of the points in the start's groups. Until 17 November 2026 it was of every point the tier left, the
+// double-double repair's scope; the two are separate since (the repair moves every point of its list, the start only
+// its groups' points). The count does not follow the degree: a group's start costs time in proportion to the degree
+// (about 0.04, 0.08 and 0.16 s a pair at degree 8,200, 16,400 and 32,800), and so, about, does the route the attempt
+// falls back to (dev/docs/cluster-start-limit-20261117.md).
+inline constexpr size_t cluster_start_points = 16;
+// The points the tier may leave for the start to look at: the count above, or one point in cluster_start_pool_share
+// where that is more. A point the tier leaves that is in no group is not the start's business: the start makes
+// nothing of it and the ball certificate takes it. The number of such points follows the degree (5 to 8 in 10,000 on
+// the random dense inputs measured, degree 8,200 to 32,768), so that, counted with the groups' points, they alone
+// switched the start off above about degree 20,000, and one close pair then failed the attempt. An attempt that has
+// failed wholesale leaves thousands in 10,000 (2,500 to 6,500 on the three measured). The share is the power of two
+// nearest the geometric mean of the two ends, 141 in 10,000 or one in 71. It gives 16 at degree 1,024: up to degree
+// 1,087 the scope is what it was.
+inline constexpr uint64_t cluster_start_pool_share = 64;
+constexpr size_t cluster_start_pool(uint64_t degree) {
+    const uint64_t share = degree / cluster_start_pool_share;
+    return share > cluster_start_points ? static_cast<size_t>(share) : cluster_start_points;
+}
+static_assert(cluster_start_pool(1087) == cluster_start_points &&
+                  cluster_start_pool(1088) == cluster_start_points + 1 && cluster_start_pool(32768) == 512,
+              "the cluster start's pool is not 16 up to degree 1,087 and one point in 64 above");
+// Whether the start runs: the tier left `left` points, `members` of them are in the start's groups, at this degree.
+// Where the tier left at most the count, the start takes whatever groups there are, as it did while the count was of
+// the points left (the un-reflection of conjugate pairs can add points to the groups after `left` is taken).
+constexpr bool cluster_start_in_scope(size_t left, size_t members, uint64_t degree) {
+    return members >= 2 && left <= cluster_start_pool(degree) &&
+           (left <= cluster_start_points || members <= cluster_start_points);
+}
+static_assert(cluster_start_in_scope(12, 2, 8) && cluster_start_in_scope(16, 16, 1040) &&
+                  cluster_start_in_scope(16, 18, 1040) && !cluster_start_in_scope(17, 2, 1087) &&
+                  cluster_start_in_scope(17, 2, 1088) && cluster_start_in_scope(24, 2, 32770) &&
+                  cluster_start_in_scope(64, 16, 4112) && !cluster_start_in_scope(65, 16, 4112) &&
+                  !cluster_start_in_scope(20, 18, 4114) && !cluster_start_in_scope(22, 0, 32768),
+              "the cluster start's scope is not: groups of at most 16 points among at most max(16, n / 64) left");
 // - Its price in the attempt's budget (machine_newton_cover's operation_weight units, a binary64 complex multiply-add
 //   being 1): a double-double complex multiply-add is four double-double products (about 9 operations each, TwoProd
 //   with an FMA and the cross terms) and four accurate double-double sums (about 20 each), about 115 binary64
@@ -380,6 +414,28 @@ inline constexpr size_t double_double_reach_group = 8;
 // least half of binary64's bits one retry starts within binary64's rounding of the root, the closest a binary64 point
 // can be: one.
 inline constexpr unsigned compensated_newton_retries = 1;
+// How many points of the attempt's first pass have what the compensated tier asks first (its admission and its
+// evaluation) made ahead and together (CompensatedCertificate::evaluate_ahead, newton_cover.cpp), so that the
+// evaluations run four at a time: 16 calls of the kernel's four points (compensated_kernel::group). The results do
+// not depend on it. What it bounds is the evaluations a cancelled pass has made for nothing (at most 63) and the
+// buffer the pass holds (64 evaluations of 13 numbers: about 8 KB, inside the first-level cache).
+inline constexpr size_t compensated_ahead_points = 64;
+// How closely two points must mirror each other in the real axis for the certificate attempt to take them for the
+// two points of a conjugate pair (certify/attempts/conjugate_pairs.hpp): both coordinates to within
+// 2^-conjugate_pair_bits of the larger point's size. Half of binary64's 53 bits: a point farther than 2^-26 from its
+// root is beyond one Newton step's reach of the goal. Measured on the binary64 packet's points of 1,083 inputs with
+// real coefficients (dev/docs/conjugate-pairs-20261117.md): where the attempt certifies, 2^-26 finds 421,992 of
+// the 422,250 pairs that 2^-20 finds and 791 more than 2^-30, and no point has a second candidate within 2^-25 of
+// its mirror image; most pairs agree to 2^-40 or better. Nothing proved depends on it: a pair it misses is asked
+// about point by point, and a wrong pair leaves two regions on one root, which the cover's disjointness test
+// refuses.
+inline constexpr int conjugate_pair_bits = 26;
+// At most this many points of the other side are compared with a point when its partner is looked for (the shorter of
+// its two windows; conjugate_pairs.hpp). A scan then costs at most 256 comparisons, below the 14 (n + 1) operations of
+// the point's compensated certificate from degree 18 on, and below that degree no side has more points than that.
+// A point with more neighbours than this in both coordinates is one of a lattice or a cluster of over 256 points a
+// side, and is asked about itself.
+inline constexpr size_t conjugate_scan_limit = 256;
 // The compensated tier's smaller circles (CompensatedCertificate::prove). Where the goal's circles fail because the
 // second-derivative term, which grows as the radius squared, passes |D| times the radius (a coarse goal: at 10 bits
 // the half-width is 2^-10 of the root), the test runs again, from the same evaluation, on circles of a radius rho
@@ -421,7 +477,7 @@ constexpr unsigned newton_cover_round_sweeps(uint64_t goal_bits) {
 // the measured time a point and sweep of the packet's tree on large sparse
 // inputs, shared among its levels.
 //
-// Its certificates evaluate value and slope twice at every point. A
+// Its ball certificates evaluate value and slope twice at every point. A
 // coefficient of a dense source's evaluations (a block dot product) costs
 // certificate_coefficient_weight operations, its measured time on a large
 // dense input. A sparse source's evaluation (DiskSparsePolynomialEvaluator)
@@ -430,19 +486,35 @@ constexpr unsigned newton_cover_round_sweeps(uint64_t goal_bits) {
 // certificate_multiplication_weight each, measured on the certificates of
 // large sparse inputs.
 //
+// A dense source's points are asked of the compensated tier first (compensated_certificate.hpp, since 26 October
+// 2026), which certifies every point of a well-conditioned input from one evaluation and its bounds, and the ball
+// certificate is left the points the tier refuses. The tier's whole work at a point costs
+// compensated_certificate_coefficient_weight operations a coefficient: its measured time in the reference code, the
+// scalar loops every CPU can run, 28.0 to 28.8 ns a point and coefficient on random dense inputs of degree 1,024 to
+// 8,192 with their second tries, which is 13.2 to 13.6 times the operation that certificate_coefficient_weight
+// implies (36 ns for 17), rounded up. The four-point kernels of 17 November 2026 take 4.0 to 4.8 ns on a CPU that has
+// them, and bring a term of the packet's dense evaluation from 2.55 ns to 0.55 and a pair of its direct sum from
+// 1.87 ns to 0.95. The weights do not count on a kernel: the route they choose is the same on every CPU and must not
+// lose on one without them (dev/docs/auto-attempt-price-20261117.md, which has the measurements).
+//
 // The weights are unit conversions measured on the reference machine, like
 // operation_weight's table (dovetail.hpp): they decide which of two methods
 // is tried first, never what either computes. The packet's term is an upper
 // bound: a packet that converges stops its points early. The certificates'
-// term is what they cost when every point is certified from two evaluations
-// at the attempt's first precision, as on every input measured; Newton steps,
-// precision raises and repair rounds add to it within the attempt's own
-// allowances. History: docs/code-history-20261021.md, heuristics.hpp 23.
+// term is what they cost when every point is certified at once, by the tier
+// that asks it first: from one compensated evaluation of a dense source, from
+// two ball evaluations of a sparse one at the attempt's first precision, as
+// on every input measured; Newton steps, precision raises, the ball
+// certificates of refused points and repair rounds add to it within the
+// attempt's own allowances, which machine_newton_cover counts at the ball
+// certificate's prices as before. History: docs/code-history-20261021.md,
+// heuristics.hpp 23; the compensated tier's weight: dev/docs/auto-attempt-price-20261117.md.
 inline constexpr uint64_t machine_sparse_term_weight = 10;
 inline constexpr uint64_t machine_tree_level_weight = 242;
 inline constexpr uint64_t certificate_coefficient_weight = 17;
 inline constexpr uint64_t certificate_multiplication_weight = 70;
 inline constexpr unsigned certificate_evaluations = 2; // at each point, of the value and of the slope
+inline constexpr uint64_t compensated_certificate_coefficient_weight = 14;
 // The repair rounds of the certificate attempt (machine_newton_cover): a sweep at one point of a round's
 // multiprecision Aberth packet makes degree - 1 interactions and evaluates the coefficient enclosure (value and
 // slope: two midpoint multiply-adds a coefficient of a dense source; a sparse source's terms as its certificate
@@ -467,13 +539,83 @@ constexpr uint64_t machine_packet_point_operations(uint64_t degree, uint64_t sup
     return machine_cover_sweeps * (evaluation + interactions);
 }
 // `sparse_products`: the products one evaluation of a sparse source makes
-// (DiskSparsePolynomialEvaluator::plan); zero for a dense source.
+// (DiskSparsePolynomialEvaluator::plan); zero for a dense source. The attempt's certificates evaluate a source term by
+// term where it has more than two terms and at most a quarter of its coefficients nonzero (the callers'
+// sparse_coefficients: prepared_piecewise.cpp, solver.cpp), and such a source's certificates are the ball
+// certificate's alone; every other source is asked of the compensated tier first.
 constexpr uint64_t certificate_attempt_point_operations(uint64_t degree, uint64_t support,
                                                         uint64_t sparse_products = 0) {
-    return machine_packet_point_operations(degree, support) +
-           certificate_evaluations *
-               (2 * certificate_coefficient_weight * support + certificate_multiplication_weight * sparse_products);
+    // The compensated tier's loops run over every coefficient of a dense source, zero or not: degree + 1 of them.
+    const uint64_t certificates =
+        support > 2 && 4 * support <= degree
+            ? certificate_evaluations *
+                  (2 * certificate_coefficient_weight * support + certificate_multiplication_weight * sparse_products)
+            : compensated_certificate_coefficient_weight * (degree + 1);
+    return machine_packet_point_operations(degree, support) + certificates;
 }
+// The same price by kernel variant (platform/kernel_variant.hpp), for the order rule of the attempt before piecewise
+// (auto_selection.cpp). A variant's kernels are the attempt's dense evaluation, the terms of its direct interaction
+// sum and its compensated certificate; the interaction tree, a sparse source's evaluation and the ball certificate
+// are the reference's on every CPU. In quarters of the selector's operation, so that every weight is a whole number
+// and the reference table's price is four times certificate_attempt_point_operations exactly.
+// Measured on random dense inputs of degree 1,024 to 32,768 (dev/docs/instruction-set-prices-20261117.md): a term of
+// the evaluation takes 2.55 to 2.61 ns in the reference code and 0.54 to 0.57 ns in the AVX2 kernel, a quarter; a
+// pair of the direct sum 2.01 ns and 0.95 ns, a half; the compensated certificate at a point 28 to 29 ns a
+// coefficient and 4.0 to 4.8 ns, 14 operations and 2; the tree 4.1 to 6.9 µs a point and sweep in both.
+struct AttemptPrices {
+    uint64_t dense_term;              // a term of the evaluation of a dense source
+    uint64_t direct_interaction;      // a pair of the direct interaction sum, below the tree's degree
+    uint64_t compensated_coefficient; // the compensated certificate at a point, a coefficient
+};
+inline constexpr uint64_t attempt_price_quarters = 4;
+inline constexpr AttemptPrices reference_attempt_prices{
+    attempt_price_quarters, attempt_price_quarters, attempt_price_quarters * compensated_certificate_coefficient_weight};
+inline constexpr AttemptPrices avx2_fma_attempt_prices{1, 2, 8};
+// The packet's quantum at one point (machine_packet_point_operations), in quarters.
+constexpr uint64_t machine_packet_point_quarters(const AttemptPrices &prices, uint64_t degree, uint64_t support) {
+    const uint64_t evaluation = 4 * support <= degree ? attempt_price_quarters * machine_sparse_term_weight * support
+                                                      : prices.dense_term * (degree + 1);
+    const uint64_t interactions =
+        degree >= machine_interaction_tree_degree
+            ? attempt_price_quarters * machine_tree_level_weight * static_cast<uint64_t>(std::bit_width(degree))
+            : prices.direct_interaction * (degree - 1);
+    return machine_cover_sweeps * (evaluation + interactions);
+}
+constexpr uint64_t certificate_attempt_point_quarters(const AttemptPrices &prices, uint64_t degree, uint64_t support,
+                                                      uint64_t sparse_products = 0) {
+    const uint64_t certificates =
+        support > 2 && 4 * support <= degree
+            ? attempt_price_quarters * certificate_evaluations *
+                  (2 * certificate_coefficient_weight * support + certificate_multiplication_weight * sparse_products)
+            : prices.compensated_coefficient * (degree + 1);
+    return machine_packet_point_quarters(prices, degree, support) + certificates;
+}
+static_assert(machine_packet_point_quarters(reference_attempt_prices, 8192, 8193) ==
+                  attempt_price_quarters * machine_packet_point_operations(8192, 8193) &&
+              machine_packet_point_quarters(reference_attempt_prices, 1000, 30) ==
+                  attempt_price_quarters * machine_packet_point_operations(1000, 30),
+              "the reference table's packet is not the packet's price before it");
+// Where a variant's prices, and not the reference's, put the attempt first, the attempt ends when its compensated
+// tier passes on more points than this. The ball certificate that those points go to is no kernel: at a point it
+// costs certificate_evaluations evaluations of value and slope at certificate_coefficient_weight each
+// (newton_cover_costs), 68 operations a coefficient on every CPU. Beyond this many points its pass costs more than
+// the tier's pass over every point did at the variant's price, and the attempt's price, which the order rule
+// weighed, no longer says what the attempt costs. For the AVX2 table: a thirty-fourth of the degree.
+// Measured (dev/docs/instruction-set-prices-20261117.md): random dense inputs of degree 32,768 leave 22 and 26
+// points; an input ill-conditioned on an arc of the unit circle leaves 4,115 of 16,400, and their ball
+// certificates took 19 s of a 51 s solve, 80 s of 127 s at degree 32,784.
+constexpr uint64_t attempt_pass_limit(const AttemptPrices &prices, uint64_t degree) {
+    return prices.compensated_coefficient * degree /
+           (attempt_price_quarters * certificate_evaluations * 2 * certificate_coefficient_weight);
+}
+static_assert(attempt_pass_limit(avx2_fma_attempt_prices, 34 * 1000) == 1000, "the pass limit is not degree / 34");
+static_assert(certificate_attempt_point_quarters(reference_attempt_prices, 8192, 8193) ==
+                  attempt_price_quarters * certificate_attempt_point_operations(8192, 8193) &&
+              certificate_attempt_point_quarters(reference_attempt_prices, 1000, 1001) ==
+                  attempt_price_quarters * certificate_attempt_point_operations(1000, 1001) &&
+              certificate_attempt_point_quarters(reference_attempt_prices, 4096, 30, 44) ==
+                  attempt_price_quarters * certificate_attempt_point_operations(4096, 30, 44),
+              "the reference table's price is not the price before it");
 // The geometric local restart's hints (secular_refinement.cpp, group_model):
 // a node is certified when its inclusion disk, n times its residue, meets the
 // goal, so it must lie within about 2^-(goal + log2 n) |z| of its root; the

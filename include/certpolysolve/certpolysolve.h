@@ -22,9 +22,9 @@ extern "C" {
 /* The version of these headers; cps_version() reports the library's. No compatibility of any kind is promised
    before 1.0.0. */
 #define CPS_VERSION_MAJOR 0
-#define CPS_VERSION_MINOR 5
-#define CPS_VERSION_PATCH 1
-#define CPS_VERSION_STRING "0.5.1"
+#define CPS_VERSION_MINOR 6
+#define CPS_VERSION_PATCH 0
+#define CPS_VERSION_STRING "0.6.0"
 typedef struct cps_polynomial cps_polynomial;
 typedef struct cps_options cps_options;
 typedef struct cps_result cps_result;

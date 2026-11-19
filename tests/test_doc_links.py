@@ -19,6 +19,14 @@ LOCAL_DATA = ("build",)
 SCANNED = ["README.md",
            "src/README.md",
            "examples/README.md"]
+# A development checkout names further files to scan and further local data trees in a file of its own,
+# which is not part of a release.
+EXTRA = ROOT / "dev" / "doc-links.json"
+if EXTRA.exists():
+    import json
+    _extra = json.loads(EXTRA.read_text(encoding="utf-8"))
+    LOCAL_DATA += tuple(_extra["local_data"])
+    SCANNED += _extra["scanned"]
 
 
 def left_out():

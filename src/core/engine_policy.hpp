@@ -141,6 +141,14 @@ struct StudyStatistics {
     uint64_t machine_cover_disks = 0;
     // Roots the attempt certified by its compensated tier (compensated_certificate.hpp).
     uint64_t machine_cover_compensated_certificates = 0;
+    // Of them, the ones its first pass certified on a later try (the tier's Newton retry).
+    uint64_t machine_cover_compensated_later_tries = 0;
+    // The attempt's points that hold the reflection in the real axis of their conjugate point's region when the
+    // attempt ends (EnginePolicy::conjugate_reflection): a reflection stands only in a completed cover, and an
+    // attempt that does not complete replaces each by the point's own certificate first, so this is zero for it.
+    // And the times reflections were given up because the cover with them was not disjoint (a wrong pair).
+    uint64_t machine_cover_reflected_certificates = 0;
+    uint64_t machine_cover_reflection_refusals = 0;
     // The attempt's double-double repairs of points the compensated tier refused (EnginePolicy::double_double_repair).
     uint64_t machine_cover_double_double_repairs = 0;
     // Groups of refused points the attempt's cluster start certified, every member (EnginePolicy::cluster_start).
@@ -229,6 +237,12 @@ struct EnginePolicy {
     // certificate. On in every recipe, and for an attempt called without a policy; off only in the tests of the ball
     // certificate's own steps, ladder and evaluations, which must still reach them.
     bool compensated_certificates = true;
+    // The points of a group of the attempt's first pass (newton_cover.cpp): what the compensated tier computes first
+    // at a point, and the second tries, are made for a group's points together. One point a group is the pass as it
+    // was before the groups, each point's tries in turn; every size gives the same cover and counters, which
+    // tests/test_attempt_groups.cpp checks, the only place that changes it. Zero, the default, is
+    // heuristics::compensated_ahead_points, and no group is larger.
+    size_t compensated_ahead_points = 0;
     // Proposal 1 (dev/docs/cluster-double-double-design-20261027.md): before any ball certificate, the attempt tries
     // the compensated tier alone on every point, repairs up to heuristics::double_double_refine_points refused points
     // in double-double (CompensatedCertificate::refine) and tries the tier on them again. Needs the compensated tier.
@@ -237,6 +251,13 @@ struct EnginePolicy {
     // tiers refuse whose Newton disks all meet is moved by an Aberth packet from a circle about the cluster's centre.
     // Needs the compensated tier.
     bool cluster_start = true;
+    // On a polynomial with real coefficients, the certificate attempt certifies one point of each conjugate pair of
+    // points and gives the other the reflection of the region it proves (newton_cover.cpp, "Conjugate pairs";
+    // dev/docs/conjugate-pairs-20261117.md).
+    bool conjugate_reflection = true;
+    // For the tests: one deliberately wrong pair (newton_cover.cpp, spoil_conjugate_mates). The attempt must then
+    // refuse its cover, since nothing it proves may depend on the pairing.
+    bool conjugate_pair_fault = false;
     CandidateEngine candidates = CandidateEngine::Adaptive;
     void (*trace)(void *, const TraceEvent &) = nullptr;
     void *trace_data = nullptr;

@@ -33,6 +33,15 @@ Polynomial flat(int degree) {
     return p;
 }
 
+// Coefficients +1 and -1 with the same deterministic signs: the envelope of a random dense polynomial, whose roots
+// lie near the unit circle and whose piecewise estimate grows like the degree.
+Polynomial unit_signs(int degree) {
+    Polynomial p(static_cast<size_t>(degree) + 1);
+    for (int j = 0; j <= degree; ++j)
+        p[static_cast<size_t>(j)] = (((j * 2654435761u) >> 7) & 1u) ? Rational(-1) : Rational(1);
+    return p;
+}
+
 cps_options approximation() {
     cps_options options;
     options.goal = CPS_ROOT_APPROXIMATION;
@@ -144,18 +153,19 @@ int main() {
             require((d::select_auto_route(certpolysolve::detail::dense(*input.get()), options).route == d::AutoRoute::Piecewise) == below,
                     "the selector no longer follows the sweep budget");
         }
-        // The certificate attempt before piecewise. Its cost in global
-        // sweeps: the binary64 packet's 32, and two evaluations of value and
-        // slope at 17 operations a coefficient (heuristics.hpp): 66 for a
-        // dense polynomial, 32 for a sparse one. Counted exactly at one point
-        // (certificate_attempt_point_operations): those sweeps times degree + support.
+        // The certificate attempt before piecewise. Its cost: the binary64 packet's 32 sweeps, and its
+        // certificates. A dense polynomial's are the compensated tier's, one evaluation a point with its bounds at
+        // compensated_certificate_coefficient_weight operations a coefficient; a sparse one's are the ball
+        // certificate's, two evaluations of value and slope at 17 operations a term and the terms' powers
+        // (heuristics.hpp). Counted exactly at one point (certificate_attempt_point_operations).
         {
             // Degree 3,200 is past the interaction tree's crossover: the
             // packet's sweep is an evaluation of 3,201 terms and twelve levels
             // of the tree at each point.
             const uint64_t dense = d::heuristics::certificate_attempt_point_operations(3200, 3201);
             const uint64_t level = d::heuristics::machine_tree_level_weight;
-            const uint64_t dense_expected = 32 * (3201 + level * 12) + 2 * 2 * 17 * 3201;
+            const uint64_t dense_expected =
+                32 * (3201 + level * 12) + d::heuristics::compensated_certificate_coefficient_weight * 3201;
             // A sparse source's passes also build its terms' powers: nine
             // terms of degree 6,400 at exponents 0, 800, ..., 6,400 (gaps of
             // 800 = 0b1100100000, so the plan's products depend only on it).
@@ -167,48 +177,121 @@ int main() {
             const uint64_t packet = 32 * (10 * 9 + level * 13);
             const uint64_t passes = 2 * (2 * 17 * 9 + 70 * products);
             require(dense == dense_expected && products > 0 && sparse == packet + passes,
-                    "the attempt's cost is not the packet plus two evaluation passes");
+                    "the attempt's cost is not the packet plus its certificates");
+            // Two terms are not a sparse source for the certificates (the callers' rule), whatever the degree; three
+            // terms in degree 12 are.
+            require(d::heuristics::certificate_attempt_point_operations(4096, 2) ==
+                            d::heuristics::machine_packet_point_operations(4096, 2) +
+                                d::heuristics::compensated_certificate_coefficient_weight * 4097 &&
+                        d::heuristics::certificate_attempt_point_operations(12, 3) ==
+                            d::heuristics::machine_packet_point_operations(12, 3) + 2 * 2 * 17 * 3,
+                    "the attempt's certificates are not priced by the tier that asks first");
             // Below the tree's crossover a dense packet sweep is one global sweep: an evaluation of 1,001 terms and
             // 999 interactions at a point.
             require(d::heuristics::machine_packet_point_operations(1000, 1001) == 32 * 2000,
                     "a direct packet sweep is not priced as a global sweep");
             // The order rule: the attempt first exactly when piecewise's
             // estimate is at least the golden ratio times that cost, on
-            // inputs on both sides of it.
-            bool first = false, later = false;
-            for (const int degree : {2048, 4096, 8192, 16384}) {
-                const auto input = reference::input(flat(degree));
-                const auto options = approximation();
+            // inputs on both sides of it. The flat envelopes' estimates are
+            // several times the attempt's cost to degree 16,384 and beyond
+            // (their exact coefficients grow too long for a test above it);
+            // the unit coefficients' estimate falls below the golden ratio
+            // times the cost between degree 8,192 and 16,384.
+            //
+            // The price is the reference's on every CPU first; where that leaves piecewise first and the kernels run
+            // a variant, the variant's (heuristics::AttemptPrices; dev/docs/instruction-set-prices-20261117.md).
+            // So the rule is checked under each variant this machine runs, and under the pin that holds the prices
+            // at the reference's while the kernels run the variant. The unit coefficients of degree 65,536 are
+            // there so that the AVX2 prices too have a fixture on each side.
+            struct Prices {
+                d::KernelVariant kernels;
+                bool pinned;
+            };
+            std::vector<Prices> price_cases = {{d::KernelVariant::Reference, false}};
+            if (d::kernel_variant_available(d::KernelVariant::Avx2Fma)) {
+                price_cases.push_back({d::KernelVariant::Avx2Fma, false});
+                price_cases.push_back({d::KernelVariant::Avx2Fma, true});
+            }
+            struct Fixture {
+                d::DensePolynomial dense;
+                d::PiecewiseAdmission admission;
+            };
+            std::vector<Fixture> fixtures;
+            for (const auto &fixture :
+                 {flat(2048), flat(4096), flat(8192), flat(16384), unit_signs(8192), unit_signs(16384), unit_signs(65536)}) {
+                const auto input = reference::input(fixture);
                 d::PiecewiseAdmissionPolicy lifted;
                 lifted.maximum_envelope_bend = lifted.maximum_work_ratio = std::nullopt;
                 lifted.maximum_global_sweeps = d::heuristics::initial_sweep_allowance;
-                const auto admission = d::admit_piecewise(certpolysolve::detail::dense(*input.get()), options, lifted);
-                const auto selection = d::select_auto_route(certpolysolve::detail::dense(*input.get()), options);
-                require(admission.selected == (selection.route == d::AutoRoute::Piecewise),
-                        "the selector does not follow piecewise's admission");
-                if (!admission.selected) {
-                    require(!selection.attempt_first, "an attempt before piecewise without piecewise");
-                    continue;
-                }
-                // The rule restated exactly: in global sweeps the estimate W is work / (n (n + s)) and the attempt's cost
-                // A is its operations at a point over n + s, so W >= phi A is x >= phi for x = work / (A' n), A' those
-                // operations; and for x > 0 that is x^2 >= x + 1 (phi is the positive root of x^2 - x - 1):
-                // work^2 >= work A' n + (A' n)^2, in 128 bits.
-                const d::uint128 work = admission.work;
-                const d::uint128 attempt =
-                    d::uint128{d::heuristics::certificate_attempt_point_operations(admission.degree, admission.support)} *
-                    admission.degree;
-                const bool expected = work * work >= work * attempt + attempt * attempt;
-                require(selection.attempt_first == expected, "the selector does not follow the order rule");
-                // The attempt before piecewise may spend piecewise's estimate (machine_newton_cover's budget).
-                require(selection.piecewise_operations == admission.work,
-                        "the selection does not carry piecewise's estimate in operations");
-                require(std::string(selection.reason) == (expected ? "certificate-attempt-before-piecewise"
-                                                                   : "piecewise-estimate-below-global-sweep-budget"),
-                        "the selection's reason does not name the order");
-                (expected ? first : later) = true;
+                auto dense = certpolysolve::detail::dense(*input.get());
+                auto admission = d::admit_piecewise(dense, approximation(), lifted);
+                fixtures.push_back({std::move(dense), std::move(admission)});
             }
-            require(first && later, "the order rule's fixtures are all on one side of it");
+            const d::KernelVariant kernels_before = d::kernel_variant();
+            const bool pin_before = d::set_reference_prices(false);
+            for (const Prices &prices : price_cases) {
+                d::set_kernel_variant(prices.kernels);
+                d::set_reference_prices(prices.pinned);
+                const bool variant_prices = prices.kernels == d::KernelVariant::Avx2Fma && !prices.pinned;
+                bool first = false, later = false, by_variant = false;
+                for (const Fixture &fixture : fixtures) {
+                    const auto &admission = fixture.admission;
+                    const auto selection = d::select_auto_route(fixture.dense, approximation());
+                    require(admission.selected == (selection.route == d::AutoRoute::Piecewise),
+                            "the selector does not follow piecewise's admission");
+                    if (!admission.selected) {
+                        require(!selection.attempt_first, "an attempt before piecewise without piecewise");
+                        continue;
+                    }
+                    // The rule restated exactly: in global sweeps the estimate W is work / (n (n + s)) and the
+                    // attempt's cost A is its operations at a point over n + s, so W >= phi A is x >= phi for
+                    // x = work / (A' n), A' those operations; and for x > 0 that is x^2 >= x + 1 (phi is the positive
+                    // root of x^2 - x - 1): work^2 >= work A' n + (A' n)^2, in 128 bits. With a table's price in
+                    // quarters of an operation, x = 4 work / (quarters n).
+                    const d::uint128 work = admission.work;
+                    const d::uint128 attempt =
+                        d::uint128{d::heuristics::certificate_attempt_point_operations(admission.degree, admission.support)} *
+                        admission.degree;
+                    const bool reference = work * work >= work * attempt + attempt * attempt;
+                    const auto first_at = [&](const d::heuristics::AttemptPrices &table) {
+                        const d::uint128 scaled = work * d::heuristics::attempt_price_quarters;
+                        const d::uint128 quarters =
+                            d::uint128{d::heuristics::certificate_attempt_point_quarters(table, admission.degree,
+                                                                                         admission.support)} *
+                            admission.degree;
+                        return scaled * scaled >= scaled * quarters + quarters * quarters;
+                    };
+                    require(first_at(d::heuristics::reference_attempt_prices) == reference,
+                            "the reference table does not decide as the price before the tables did");
+                    const bool variant = first_at(d::heuristics::avx2_fma_attempt_prices);
+                    require(!reference || variant, "the variant's prices leave out an input the reference's take");
+                    const bool expected = reference || (variant_prices && variant);
+                    const bool decided_by_variant = expected && !reference;
+                    require(selection.attempt_first == expected, "the selector does not follow the order rule");
+                    // The attempt before piecewise may spend piecewise's estimate (machine_newton_cover's budget).
+                    require(selection.piecewise_operations == admission.work,
+                            "the selection does not carry piecewise's estimate in operations");
+                    require(std::string(selection.reason) ==
+                                (decided_by_variant ? "certificate-attempt-before-piecewise-at-avx2-fma-prices"
+                                 : expected         ? "certificate-attempt-before-piecewise"
+                                                    : "piecewise-estimate-below-global-sweep-budget"),
+                            "the selection's reason does not name the order and the prices that decided it");
+                    // Only the attempt a variant's prices put first carries those prices and their pass limit.
+                    require(selection.attempt_prices ==
+                                    (decided_by_variant ? d::KernelVariant::Avx2Fma : d::KernelVariant::Reference) &&
+                                selection.attempt_pass_limit ==
+                                    (decided_by_variant ? d::heuristics::attempt_pass_limit(
+                                                              d::heuristics::avx2_fma_attempt_prices, admission.degree)
+                                                        : 0),
+                            "the selection does not carry the prices that decided, or their pass limit");
+                    (decided_by_variant ? by_variant : expected ? first : later) = true;
+                }
+                require(first && later, "the order rule's fixtures are all on one side of it");
+                require(by_variant == variant_prices,
+                        "no fixture is first under the variant's prices alone, or one is without those prices");
+            }
+            d::set_kernel_variant(kernels_before);
+            d::set_reference_prices(pin_before);
         }
         // A goal below the default is routed as the default goal is: the
         // selector's estimate drops piecewise's upper model rungs as the goal

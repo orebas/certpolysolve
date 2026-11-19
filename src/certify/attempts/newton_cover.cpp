@@ -20,6 +20,7 @@
 // Design notes: docs/mathematics.md ("The certificate attempt"), docs/production-methods.md (the recipes).
 // Moved verbatim from piecewise_roots.cpp in W8's S3 (docs/w8-plan-20261021.md).
 #include "certify/attempts/newton_cover.hpp"
+#include "certify/attempts/conjugate_pairs.hpp"
 #include "core/engine_policy.hpp"
 #include "core/engine_statistics.hpp"
 #include "certify/attempts/newton_evaluation.hpp"
@@ -39,7 +40,10 @@
 #include "core/telemetry.hpp"
 #include "core/wide_int.hpp"
 #include <algorithm>
+#include <tuple>
+#include <utility>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <numbers>
@@ -83,6 +87,52 @@ bool magnitude_log2(const mag_t m, slong &exponent, double &fraction) {
     fraction = std::log2(std::ldexp(static_cast<double>(MAG_MAN(m)), -MAG_BITS));
     return true;
 }
+// For the attempt's first pass on a polynomial with real coefficients: by point, the point of `order` that mirrors
+// it in the real axis (conjugate_pairs.hpp: the guess, its tolerance and why nothing proved depends on it), or -1.
+// The points are the binary64 packet's, so their midpoints are binary64 numbers.
+std::vector<slong> conjugate_mates(ConstRootView points, std::span<const slong> order) {
+    std::vector<PlanePoint> places(order.size());
+    for (size_t k = 0; k < order.size(); ++k)
+        places[k] = {arf_to_binary64(arb_midref(acb_realref(points[order[k]])), ARF_RND_NEAR),
+                     arf_to_binary64(arb_midref(acb_imagref(points[order[k]])), ARF_RND_NEAR)};
+    const auto partner = conjugate_partners(places, heuristics::conjugate_pair_bits, heuristics::conjugate_scan_limit);
+    std::vector<slong> mate(static_cast<size_t>(points.size()), -1);
+    for (size_t k = 0; k < order.size(); ++k)
+        if (partner[k] >= 0)
+            mate[static_cast<size_t>(order[k])] = order[static_cast<size_t>(partner[k])];
+    return mate;
+}
+
+// For the tests (EnginePolicy::conjugate_pair_fault): one wrong pair. The first paired point below the axis is given
+// the partner of the second, whose own partners are left without one, so that two rectangles come to lie on one
+// root and one root has none. The attempt must then refuse its cover; test_conjugate_reflection.cpp requires it.
+void spoil_conjugate_mates(std::vector<slong> &mate, ConstRootView points) {
+    std::vector<slong> below;
+    for (size_t i = 0; i < mate.size() && below.size() < 2; ++i)
+        if (mate[i] >= 0 && arf_sgn(arb_midref(acb_imagref(points[static_cast<slong>(i)]))) < 0)
+            below.push_back(static_cast<slong>(i));
+    if (below.size() < 2)
+        return;
+    const slong first_above = mate[static_cast<size_t>(below[0])], second_above = mate[static_cast<size_t>(below[1])];
+    mate[static_cast<size_t>(below[0])] = second_above;
+    mate[static_cast<size_t>(second_above)] = below[0];
+    mate[static_cast<size_t>(first_above)] = -1;
+    mate[static_cast<size_t>(below[1])] = -1;
+}
+
+// The reflection in the real axis of a published region: its ball conjugated, its real ends as they are, its
+// imaginary ends exchanged and negated. For a region that holds exactly one root of a polynomial with real
+// coefficients, the reflection holds exactly one root.
+Root reflected(const Root &region) {
+    Root out = region;
+    acb_conj(out.box.value(), out.box.value());
+    std::swap(out.endpoints[2], out.endpoints[3]);
+    out.endpoints[2].negate();
+    out.endpoints[3].negate();
+    out.certificate += ", reflected in the real axis from the conjugate root's rectangle";
+    return out;
+}
+
 // Proposal geometry only: every pair of disks in a selected component meets.
 // This does not prove that a component contains distinct roots or a root count.
 // Keep admission, cached evaluation, union order and member order unchanged;
@@ -649,7 +699,8 @@ bool machine_newton_cover(std::vector<Root> &out, PolynomialSource &source, acb_
                           certpolysolve::detail::CandidateStatistics &statistics, bool coefficient_bound, const EnginePolicy *diagnostic,
                           std::unique_ptr<RootVector> *retained_proposals, bool *machine_converged,
                           slong *certificate_bits, bool scaled_packet, PartialNewtonCover *partial,
-                          std::span<const uint8_t> settled, uint64_t fallback_operations) {
+                          std::span<const uint8_t> settled, uint64_t fallback_operations, uint64_t pass_limit,
+                          const heuristics::AttemptPrices *packet_prices) {
     if (machine_converged) *machine_converged = false;
     if (partial) *partial = {};
     const bool retry = !settled.empty();
@@ -703,7 +754,11 @@ bool machine_newton_cover(std::vector<Root> &out, PolynomialSource &source, acb_
     const uint128 fallback = fallback_operations > 0
         ? uint128{fallback_operations}
         : uint128{heuristics::initial_sweep_allowance} * degree * (degree + terms);
-    const uint128 quantum_operations = uint128{heuristics::machine_packet_point_operations(degree, terms)} * degree;
+    // At the caller's table where it gives one (packet_prices): whole operations of the table's quarters.
+    const uint128 quantum_operations =
+        packet_prices ? uint128{heuristics::machine_packet_point_quarters(*packet_prices, degree, terms)} * degree /
+                            heuristics::attempt_price_quarters
+                      : uint128{heuristics::machine_packet_point_operations(degree, terms)} * degree;
     uint64_t quanta = 0;
     if (!retry) {
         // NumericalEngine::advance records candidate_ns itself. Binary64
@@ -858,7 +913,16 @@ bool machine_newton_cover(std::vector<Root> &out, PolynomialSource &source, acb_
         // Two certified regions that meet could hold the same root, and both
         // are given up; the rest are pairwise disjoint.
         bool pass_complete = false;
+        // The points that hold a reflection from the compensated tier's pass (conjugate pairs, below), each with the
+        // place the packet left it at, and unreflect, which replaces every one of them by the point's own certificate
+        // and returns the points the tier then refuses. It is defined below, after the tier's pass it asks with.
+        std::vector<slong> reflected_points;
+        std::vector<ComplexBall> reflected_places;
+        std::function<std::vector<slong>()> unreflect;
         const auto refuse = [&] {
+            // An attempt that does not complete hands on certificates of the points' own.
+            if (unreflect && !reflected_points.empty())
+                unreflect();
             if (!partial || !std::count(certified.begin(), certified.end(), uint8_t(1)))
                 return false;
             std::vector<size_t> index;
@@ -1069,11 +1133,34 @@ bool machine_newton_cover(std::vector<Root> &out, PolynomialSource &source, acb_
         std::vector<uint8_t> deferred(static_cast<size_t>(n), 0);
         bool deferred_any = false;
         const auto cluster_start = [&](std::vector<slong> &pool) -> int {
-            if (compensated && pool.size() >= 2 && pool.size() <= heuristics::cluster_start_points) {
-                const auto groups = cluster_start_groups(points.view(), pool, *compensated,
-                                                         compensated_seen, options);
-                if (groups.empty())
+            // Its scope (heuristics::cluster_start_in_scope): the points in its groups, at most 16. The points the tier
+            // left may be more, up to a count that follows the degree: those in no group are the ball certificate's
+            // and not the start's.
+            const size_t left = pool.size();
+            const auto in_scope = [left, n](const std::vector<std::vector<slong>> &groups) {
+                size_t members = 0;
+                for (const auto &group : groups)
+                    members += group.size();
+                return heuristics::cluster_start_in_scope(left, members, static_cast<uint64_t>(n));
+            };
+            if (compensated && pool.size() >= 2 &&
+                pool.size() <= heuristics::cluster_start_pool(static_cast<uint64_t>(n))) {
+                auto groups = cluster_start_groups(points.view(), pool, *compensated,
+                                                   compensated_seen, options);
+                if (!in_scope(groups))
                     return 0;
+                // A group's packet holds every other point where it is: the reflections are replaced first, so that
+                // it runs among the points it runs among without pairs. A point the tier then refuses joins the pool.
+                if (unreflect && !reflected_points.empty()) {
+                    const std::vector<slong> back = unreflect();
+                    if (!back.empty()) {
+                        pool.insert(pool.end(), back.begin(), back.end());
+                        std::sort(pool.begin(), pool.end());
+                        groups = cluster_start_groups(points.view(), pool, *compensated, compensated_seen, options);
+                        if (!in_scope(groups))
+                            return 0;
+                    }
+                }
                 std::vector<uint8_t> done(static_cast<size_t>(n), 0);
                 // What the groups the start did not certify spent: kept apart, so that the start's failures together stay
                 // within one budget while the rest of the attempt decides with what they gave back.
@@ -1289,54 +1376,326 @@ bool machine_newton_cover(std::vector<Root> &out, PolynomialSource &source, acb_
         for (slong i = 0; i < n; ++i)
             if (!(retry && settled[static_cast<size_t>(i)]))
                 order.push_back(i);
+        // Conjugate pairs (docs/mathematics.md, "The certificate attempt"). The roots of a polynomial with real
+        // coefficients off the real axis come in conjugate pairs, and so do the points the packet brought to them.
+        // Where one point of a pair holds a region that this attempt proved and that lies strictly on one side of the
+        // axis, that region's reflection holds the conjugate root in the same way (exactly one root for a rectangle, at
+        // least one for an inclusion disk's square) and lies strictly on the other side, so the other point can take it
+        // and need not be asked itself. Which points are a pair is a guess from their places (conjugate_mates) and
+        // proves nothing: a wrong guess puts two regions on one root, and the cover with it is not disjoint.
+        //
+        // A reflection stands only in a completed cover. The tier's pass takes reflections as it goes, so that an
+        // attempt that completes never asks the second point of a pair. An attempt that does not complete (a point
+        // refused in the ball certificate's pass, a group for the cluster start, a refused cover) first replaces
+        // every reflection by the point's own certificate (unreflect), so that what it hands to its rounds and to the
+        // method that follows is what it hands on without pairs. Left standing, reflections changed what the attempt
+        // handed on in its last digits (a reflected region is its partner's mirror image, not the region the point's
+        // own certificate gives), and on hard clustered inputs the method that follows then took another of its
+        // paths: three cases of the fuzz campaign's real-root family lost their completion under their limits, and
+        // one corpus input needed 129 sweeps for 37 (dev/docs/conjugate-pairs-20261117.md, "Only in a completed
+        // cover"). Not in a retry, whose points are those a goal change left and whose certificates go back to the
+        // caller one by one.
+        std::vector<slong> mate;
+        if (!retry && source.real() && (!diagnostic || diagnostic->conjugate_reflection)) {
+            mate = conjugate_mates(points.view(), order);
+            if (diagnostic && diagnostic->conjugate_pair_fault)
+                spoil_conjugate_mates(mate, points.view());
+        }
+        // The region point i may take the reflection of: its partner's, proved here and clear of the axis.
+        const auto mirror_of = [&](slong i) -> const Root * {
+            const slong other = mate.empty() ? -1 : mate[static_cast<size_t>(i)];
+            if (other < 0 || !certified[static_cast<size_t>(other)])
+                return nullptr;
+            const arb_srcptr height = acb_imagref(checked[static_cast<size_t>(other)].box.value());
+            return arb_is_positive(height) || arb_is_negative(height) ? &checked[static_cast<size_t>(other)] : nullptr;
+        };
+        // The points of `list`, each with a partner proved clear of the axis, take their partners' reflections where
+        // that completes the cover: every point then holds a region, and the regions are disjoint. Otherwise nothing
+        // is taken and the answer is false: a point is still open, or the reflections put two regions on one root (a
+        // wrong pair). A reflected point stays where the packet left it: the attempt is over, and its regions are its
+        // answer.
+        bool reflections_complete = false;
+        const auto reflect_all = [&](std::span<const slong> list) {
+            for (const slong i : list) {
+                checked[static_cast<size_t>(i)] = reflected(*mirror_of(i));
+                certified[static_cast<size_t>(i)] = 1;
+            }
+            if (std::find(certified.begin(), certified.end(), uint8_t(0)) == certified.end() && disjoint(checked)) {
+                if (counts)
+                    counts->machine_cover_reflected_certificates += list.size();
+                reflections_complete = true;
+                return true;
+            }
+            for (const slong i : list) {
+                checked[static_cast<size_t>(i)] = Root{};
+                certified[static_cast<size_t>(i)] = 0;
+            }
+            if (counts)
+                ++counts->machine_cover_reflection_refusals;
+            return false;
+        };
         // Proposal 1 (dev/docs/cluster-double-double-design-20261027.md): the compensated tier alone on every point
         // first. A few points it refuses, the roots of small clusters that binary64 leaves at about u / s^(k-1), get
         // one repair in double-double (CompensatedCertificate::refine, every other point held where it is) and the
         // tier again, before any ball certificate; the points still refused go on below as before. The repair is a
         // proposal: every root it helps is proved by the compensated tier's own test.
-        if (compensated && (!diagnostic || diagnostic->double_double_repair)) {
-            std::vector<slong> waiting;
-            for (const slong i : order) {
-                if (options.cancelled())
+        const bool tier_first = compensated && (!diagnostic || diagnostic->double_double_repair);
+        // The tier's pass, its second tries and its repair: defined at the attempt's scope, since unreflect asks
+        // with them after the pass; used only where the tier is asked first (tier_first).
+        std::vector<slong> waiting;
+        // Every point in turn, as before, a group of heuristics::compensated_ahead_points points at a time (the
+        // policy's compensated_ahead_points, which only a test changes: every size gives the same cover). What
+        // the tier computes first at a point (its admission, its evaluation there, the proof's geometry and its
+        // bound on the second derivative) is made ahead for the group's points together, and so is what the
+        // second try computes at the points whose first try asks for one (the Newton retry): the evaluations and
+        // the majorants' recurrences then run several points at a time where the CPU allows
+        // (CompensatedCertificate::evaluate_ahead and evaluate_ahead_at: the same values). Each point's tries are
+        // certify's own in certify's order, and a point's tries read and move that point alone, so making one
+        // point's second try after another point's first changes nothing; the attempt's precision does not change
+        // within the pass; the polls stay one a point, and a pass that a poll ends first finishes the second
+        // tries of the points before it, as it had when they came one at a time.
+        const size_t group_points = diagnostic && diagnostic->compensated_ahead_points
+                                        ? std::min(diagnostic->compensated_ahead_points,
+                                                   heuristics::compensated_ahead_points)
+                                        : heuristics::compensated_ahead_points;
+        std::vector<CompensatedAhead> ahead(std::min(order.size(), group_points));
+        const auto certified_by_tier = [&](slong i, Root &root, bool later_try) {
+            if (counts) {
+                ++counts->machine_cover_compensated_certificates;
+                counts->machine_cover_compensated_later_tries += later_try;
+            }
+            acb_get_mid(points[i], root.box.value());
+            checked[static_cast<size_t>(i)] = std::move(root);
+            certified[static_cast<size_t>(i)] = 1;
+        };
+        // The group's points whose last try asked for another, in the pass's order, each with that try's point.
+        std::vector<std::pair<slong, CompensatedRetry>> again, next;
+        std::vector<double> again_re, again_im;
+        std::vector<CompensatedAhead> again_ahead;
+        const auto finish_group = [&] {
+            for (unsigned k = 0; k < heuristics::compensated_newton_retries && !again.empty(); ++k) {
+                again_re.clear();
+                again_im.clear();
+                for (const auto &entry : again) {
+                    again_re.push_back(entry.second.re);
+                    again_im.push_back(entry.second.im);
+                }
+                again_ahead.resize(again.size());
+                compensated->evaluate_ahead_at(again_re, again_im, options, attempt_progress.precision,
+                                               again_ahead);
+                next.clear();
+                for (size_t j = 0; j < again.size(); ++j) {
+                    Root root;
+                    CompensatedRetry retry;
+                    if (compensated->certify_again(root, again[j].second, options, attempt_progress.precision,
+                                                   &again_ahead[j], retry))
+                        certified_by_tier(again[j].first, root, true);
+                    else if (retry.available)
+                        next.emplace_back(again[j].first, retry);
+                    else
+                        waiting.push_back(again[j].first);
+                }
+                again.swap(next);
+            }
+            // A point whose tries are spent is passed on.
+            for (const auto &entry : again)
+                waiting.push_back(entry.first);
+            again.clear();
+        };
+        // The tier on the points of `list`, in its order. False where a poll ended it.
+        const auto tier_pass = [&](std::span<const slong> list) {
+            for (size_t m = 0; m < list.size(); ++m) {
+                if (options.cancelled()) {
+                    finish_group();
                     return false;
-                if (!attempt_compensated(i))
+                }
+                const size_t within = m % ahead.size();
+                if (within == 0) {
+                    finish_group();
+                    const size_t here = std::min(ahead.size(), list.size() - m);
+                    compensated->evaluate_ahead(points.data(), list.subspan(m, here), options,
+                                                attempt_progress.precision,
+                                                std::span<CompensatedAhead>(ahead).first(here));
+                }
+                const slong i = list[m];
+                ComplexBall point;
+                acb_get_mid(point.value(), points[i]);
+                if (!acb_is_finite(point.value()) || acb_is_zero(point.value())) {
+                    waiting.push_back(i);
+                    continue;
+                }
+                Root root;
+                CompensatedRetry retry;
+                if (compensated->certify_first(root, point.value(), options, attempt_progress.precision,
+                                               &compensated_seen[static_cast<size_t>(i)], &ahead[within], retry))
+                    certified_by_tier(i, root, false);
+                else if (retry.available && heuristics::compensated_newton_retries > 0)
+                    again.emplace_back(i, retry);
+                else
                     waiting.push_back(i);
             }
-            // Paid from the attempt's budget, as a round is: a step at a point costs a round's sweep at a point at
-            // double-double's weight, the steps are capped so that every point taking every one of them stays within
-            // the repair's share of what is left, and the steps it takes are charged.
+            finish_group();
+            return true;
+        };
+        // The double-double repair of the points of `list` (above), every other point held where it is: a point the
+        // tier then proves leaves the list, and one it does not goes on from where it was.
+        // Paid from the attempt's budget, as a round is: a step at a point costs a round's sweep at a point at
+        // double-double's weight, the steps are capped so that every point taking every one of them stays within
+        // the repair's share of what is left, and the steps it takes are charged.
+        const auto repair = [&](std::vector<slong> &list) {
             const double point_step = sweep_evaluations * heuristics::double_double_operation_weight;
             const double affordable =
-                waiting.empty() ? 0
-                                : std::floor(heuristics::double_double_budget_share * (budget() - attempt_progress.spent - packets) /
-                                             (static_cast<double>(waiting.size()) * point_step));
+                list.empty() ? 0
+                             : std::floor(heuristics::double_double_budget_share * (budget() - attempt_progress.spent - packets) /
+                                          (static_cast<double>(list.size()) * point_step));
             const unsigned steps = static_cast<unsigned>(
                 std::clamp(affordable, 0.0, static_cast<double>(heuristics::double_double_refine_steps)));
-            if (steps && waiting.size() <= heuristics::double_double_refine_points) {
-                // A point the repair does not let the tier prove goes on from where it was: the ball certificate and
-                // its precision raises then see the points they see without the repair (a repaired point the tier
-                // still refuses can need a higher precision that its new place does not reach: rounded double roots
-                // of degree 64, 27 October).
-                std::vector<ComplexBall> before(waiting.size());
-                for (size_t m = 0; m < waiting.size(); ++m)
-                    acb_set(before[m].value(), points[waiting[m]]);
-                uint64_t evaluated = 0;
-                const bool moved =
-                    compensated->refine(points.data(), n, waiting, static_cast<int64_t>(options.bits), evaluated, steps);
-                packets += static_cast<double>(evaluated) * point_step;
-                if (moved) {
-                    if (counts)
-                        ++counts->machine_cover_double_double_repairs;
-                    std::vector<slong> still;
-                    for (size_t m = 0; m < waiting.size(); ++m) {
-                        if (attempt_compensated(waiting[m]))
-                            continue;
-                        acb_set(points[waiting[m]], before[m].value());
-                        still.push_back(waiting[m]);
-                    }
-                    waiting = std::move(still);
+            if (!steps || list.size() > heuristics::double_double_refine_points)
+                return;
+            // A point the repair does not let the tier prove goes on from where it was: the ball certificate and
+            // its precision raises then see the points they see without the repair (a repaired point the tier
+            // still refuses can need a higher precision that its new place does not reach: rounded double roots
+            // of degree 64, 27 October).
+            std::vector<ComplexBall> before(list.size());
+            for (size_t m = 0; m < list.size(); ++m)
+                acb_set(before[m].value(), points[list[m]]);
+            uint64_t evaluated = 0;
+            const bool moved =
+                compensated->refine(points.data(), n, list, static_cast<int64_t>(options.bits), evaluated, steps);
+            packets += static_cast<double>(evaluated) * point_step;
+            if (!moved)
+                return;
+            if (counts)
+                ++counts->machine_cover_double_double_repairs;
+            std::vector<slong> still;
+            for (size_t m = 0; m < list.size(); ++m) {
+                if (attempt_compensated(list[m]))
+                    continue;
+                acb_set(points[list[m]], before[m].value());
+                still.push_back(list[m]);
+            }
+            list = std::move(still);
+        };
+        // Whether the repair proves every point of `list`. If it does not, everything it did is taken back: the
+        // points and the tier's evaluations at them, what it proved, its charge and its counts, so that the attempt
+        // goes on as if the trial had not been made.
+        const auto repair_proves_all = [&](std::vector<slong> list) {
+            const std::vector<slong> all = list;
+            std::vector<ComplexBall> place(all.size());
+            std::vector<CompensatedEvaluation> seen(all.size());
+            for (size_t m = 0; m < all.size(); ++m) {
+                acb_set(place[m].value(), points[all[m]]);
+                seen[m] = compensated_seen[static_cast<size_t>(all[m])];
+            }
+            const double packets_before = packets;
+            const uint64_t repairs_before = counts ? counts->machine_cover_double_double_repairs : 0;
+            const uint64_t proofs_before = counts ? counts->machine_cover_compensated_certificates : 0;
+            repair(list);
+            if (list.empty())
+                return true;
+            for (size_t m = 0; m < all.size(); ++m) {
+                const auto i = static_cast<size_t>(all[m]);
+                acb_set(points[all[m]], place[m].value());
+                compensated_seen[i] = seen[m];
+                if (certified[i]) {
+                    certified[i] = 0;
+                    checked[i] = Root{};
                 }
             }
+            packets = packets_before;
+            if (counts) {
+                counts->machine_cover_double_double_repairs = repairs_before;
+                counts->machine_cover_compensated_certificates = proofs_before;
+            }
+            return false;
+        };
+        // unreflect (above): the point goes back to where the packet left it, and the tier is asked about it at the
+        // precision of its pass. The tier's answer at a point depends on the point and that precision alone, so it is
+        // the certificate the point has without pairs.
+        slong tier_precision = attempt_progress.precision;
+        unreflect = [&] {
+            const std::vector<slong> list = std::exchange(reflected_points, {});
+            for (size_t m = 0; m < list.size(); ++m) {
+                const auto i = static_cast<size_t>(list[m]);
+                acb_set(points[list[m]], reflected_places[m].value());
+                certified[i] = 0;
+                checked[i] = Root{};
+            }
+            reflected_places.clear();
+            if (counts)
+                counts->machine_cover_reflected_certificates -= list.size();
+            waiting.clear();
+            const slong now = std::exchange(attempt_progress.precision, tier_precision);
+            tier_pass(list);
+            attempt_progress.precision = now;
+            std::sort(waiting.begin(), waiting.end());
+            return std::exchange(waiting, {});
+        };
+        if (tier_first) {
+            // Conjugate pairs (above); the tier's own coefficients must be real as well. The tier is asked about the
+            // first point of each pair in the pass's order and about the points without a partner. A second point takes
+            // the reflection of a rectangle the tier proved clear of the axis and is never asked; otherwise the tier is
+            // asked about it.
+            tier_precision = attempt_progress.precision;
+            const bool mirrors = !mate.empty() && compensated->real_coefficients();
+            const auto reflect_onto = [&](slong i) {
+                const Root *region = mirrors ? mirror_of(i) : nullptr;
+                if (!region)
+                    return false;
+                // The packet's place is kept for unreflect. The point goes to the reflection's centre, the mirror
+                // image of its partner's certified centre and as near its root as that is to the other: the repair
+                // below holds it there, as it holds a point the tier proved.
+                reflected_points.push_back(i);
+                acb_set(reflected_places.emplace_back().value(), points[i]);
+                Root root = reflected(*region);
+                acb_get_mid(points[i], root.box.value());
+                checked[static_cast<size_t>(i)] = std::move(root);
+                certified[static_cast<size_t>(i)] = 1;
+                if (counts)
+                    ++counts->machine_cover_reflected_certificates;
+                return true;
+            };
+            std::vector<slong> asked, second;
+            for (const slong i : order) {
+                const slong other = mirrors ? mate[static_cast<size_t>(i)] : -1;
+                (other >= 0 && other < i ? second : asked).push_back(i);
+            }
+            if (!tier_pass(asked))
+                return false;
+            asked.clear();
+            for (const slong i : second)
+                if (!reflect_onto(i))
+                    asked.push_back(i);
+            if (!tier_pass(asked))
+                return false;
+            // The points passed on, in the pass's order (`order` ascends).
+            std::sort(waiting.begin(), waiting.end());
+            // More of them than the caller's limit: the ball certificates of so many points cost more than the
+            // tier's whole pass did, and the attempt ends here (pass_limit; heuristics::attempt_pass_limit).
+            if (pass_limit && waiting.size() > pass_limit)
+                return refuse();
+            // The tier proves one point of a pair and passes the other on where the two are not equally near their
+            // roots. A point passed on is one the repair and the passes below work on, with or without pairs, so it
+            // takes its partner's reflection only where that completes the cover at once: every point passed on has
+            // such a partner, or the repair proves the others. A trial that does not prove them all is taken back
+            // whole (repair_proves_all), and the points passed on stay as they are without pairs. (Reflected
+            // whenever they could be, they changed which points the repair worked on in attempts that then failed.)
+            if (mirrors && !waiting.empty()) {
+                std::vector<slong> with_partner, alone;
+                for (const slong i : waiting)
+                    (mirror_of(i) ? with_partner : alone).push_back(i);
+                if (!with_partner.empty() && (alone.empty() || repair_proves_all(alone))) {
+                    for (const slong i : with_partner)
+                        reflect_onto(i);
+                    waiting.clear();
+                }
+            }
+            // Where the tier proved a point, the ball certificate's pass below takes no reflection: the points it is
+            // left are few, and the tier's reflections are the ones unreflect replaces. Where the tier proved none (a
+            // goal beyond binary64), that pass has the pairs to itself.
+            if (std::find(certified.begin(), certified.end(), uint8_t(1)) != certified.end())
+                mate.clear();
+            repair(waiting);
             order = std::move(waiting);
             // Before the ball certificate's pass: groups of the points the tiers refuse, clusters the double-double
             // repair could not reach, go to the cluster start, where the pass would refuse them one by one.
@@ -1354,15 +1713,87 @@ bool machine_newton_cover(std::vector<Root> &out, PolynomialSource &source, acb_
             // Every point left was refused by the tier where it now is, at this precision.
             compensated_refused_precision = attempt_progress.precision;
         }
+        // The ball certificate's pass over the points left, in order. With conjugate pairs still in use (above: a
+        // sparse source, or a goal at which the tier proved nothing), the second point of a pair whose partner this
+        // pass proved clear of the axis is held back, not asked, as long as the pass has refused no point. If the pass
+        // ends so, the points held back take their partners' reflections and the cover is complete. At the first
+        // refusal they are asked themselves, before the refused point is dealt with (they come before it in the
+        // pass's order), and no point is held back after it. Each is asked at the precision the pass had at its turn,
+        // so that its certificate is the one it has without pairs (a point between it and the refused one may have
+        // raised the precision: the first build asked at the raised one, and 17 regions of a 333-bit solve differed
+        // from main's in their last digits), and the pass then goes on at the precision it had.
+        std::vector<std::pair<slong, slong>> held_back; // the point, and the pass's precision at its turn
+        const auto ask_held_back = [&] {
+            const slong now = attempt_progress.precision;
+            const auto at = [&](slong precision) {
+                if (attempt_progress.precision == precision)
+                    return;
+                attempt_progress.precision = precision;
+                if (!evaluations.prepare(precision))
+                    exhausted = true;
+            };
+            for (const auto &[d, turn] : held_back) {
+                at(turn);
+                if (!attempt(d)) {
+                    refused_at[static_cast<size_t>(d)] = attempt_progress.precision;
+                    refused.push_back(d);
+                }
+            }
+            held_back.clear();
+            at(now);
+        };
         for (const slong i : order) {
             if (options.cancelled())
                 return false;
+            if (!mate.empty() && refused.empty() && mate[static_cast<size_t>(i)] >= 0 && mate[static_cast<size_t>(i)] < i &&
+                mirror_of(i)) {
+                held_back.emplace_back(i, attempt_progress.precision);
+                continue;
+            }
             if (attempt(i))
                 continue;
+            const slong turn_precision = attempt_progress.precision;
+            ask_held_back();
             if (exhausted)
                 return refuse();
-            refused_at[static_cast<size_t>(i)] = attempt_progress.precision;
+            refused_at[static_cast<size_t>(i)] = turn_precision;
             refused.push_back(i);
+        }
+        // No point refused: the points held back complete the cover with their reflections, or, where the cover with
+        // them is not disjoint (a wrong pair), are asked themselves.
+        if (!held_back.empty()) {
+            std::vector<slong> list;
+            for (const auto &entry : held_back)
+                list.push_back(entry.first);
+            if (reflect_all(list))
+                held_back.clear();
+            else {
+                ask_held_back();
+                if (exhausted)
+                    return refuse();
+                std::sort(refused.begin(), refused.end());
+            }
+        }
+        // The points refused take reflections where every one of them has a partner proved clear of the axis: the
+        // cover is then complete. Otherwise they stay refused, and the attempt goes on without pairs.
+        if (!mate.empty() && !refused.empty() &&
+            std::all_of(refused.begin(), refused.end(), [&](slong i) { return mirror_of(i) != nullptr; }) &&
+            reflect_all(refused))
+            refused.clear();
+        mate.clear();
+        // A point is left refused: the attempt does not complete here, and the reflections of the tier's pass are
+        // replaced by the points' own certificates before the rounds, which hold every other point where it is. A
+        // point the tier then refuses gets the turn in this pass that it would have had.
+        if (!refused.empty() && !reflected_points.empty()) {
+            for (const slong i : unreflect()) {
+                if (attempt(i))
+                    continue;
+                if (exhausted)
+                    return refuse();
+                refused_at[static_cast<size_t>(i)] = attempt_progress.precision;
+                refused.push_back(i);
+            }
+            std::sort(refused.begin(), refused.end());
         }
         // The rounds move the points: the tier is asked again.
         compensated_refused_precision = 0;
@@ -1399,7 +1830,19 @@ bool machine_newton_cover(std::vector<Root> &out, PolynomialSource &source, acb_
         // The deferred groups' points hold no certificate: the other points' are returned for the caller to keep.
         if (deferred_any)
             return refuse();
-        if (retry || !disjoint(checked))
+        bool cover = !retry && (reflections_complete || disjoint(checked));
+        if (!retry && !cover && !reflected_points.empty()) {
+            // The regions meet with reflections among them: a wrong pair. The reflections are replaced by the points'
+            // own certificates, a point the tier then refuses is asked of the ball certificate, and the cover is
+            // judged again.
+            if (counts)
+                ++counts->machine_cover_reflection_refusals;
+            bool all = true;
+            for (const slong i : unreflect())
+                all = attempt(i) && all;
+            cover = all && disjoint(checked);
+        }
+        if (!cover)
             return refuse();
         disjoint_known = true;
     }

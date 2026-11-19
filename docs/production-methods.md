@@ -63,9 +63,15 @@ query only, never names, hashes or family labels:
 - Exact coefficient queries with a cluster-radius goal take the maintained secular recipe.
   Piecewise admission currently refuses that goal.
 - When it picks piecewise and the estimate is at least the golden ratio times the cost bound of the global
-  recipes' certificate attempt (a binary64 packet and two evaluation passes), the piecewise recipe begins with
+  recipes' certificate attempt (a binary64 packet and a certificate at every point), the piecewise recipe begins with
   that attempt. A forced piecewise solve never does. This is an empirical ordering rule;
   the cost estimate and attempt allowance do not establish a worst-case competitive ratio.
+  The cost bound is the scalar code's on every CPU. Where it leaves piecewise first and the CPU has AVX2 and FMA,
+  the bound as that CPU's kernels run the attempt is asked too, and the diagnostics say when it decided
+  (`certificate-attempt-before-piecewise-at-avx2-fma-prices`). So the method Auto tries first, and with it the
+  bits of its answer, can depend on the CPU. A forced method returns the same bits on every CPU today; that is
+  the present state of the kernels, not a guarantee
+  ([mathematics.md](mathematics.md), "The certificate attempt first").
 - On exact real coefficients, a factor of degree at least `heuristics::real_line_seed_min_degree` whose roots are
   all real starts from the all-real seed pass's seeds instead of the circles (`src/real_line_seeds.cpp`,
   the design), on the secular route and on piecewise's hand-off to it.
@@ -74,7 +80,9 @@ query only, never names, hashes or family labels:
   the note). The seeds only start the iteration; the secular route
   certifies every root.
 - Every comparison above is of exact integer counts or of binary64 ratios, so the route is the same on every
-  platform (the note).
+  platform (the note), with the one exception stated
+  above: where a kernel variant's cost bound decides whether the certificate attempt goes before piecewise, that
+  order depends on the CPU.
 - A forced piecewise solve leaves for secular as the selector's piecewise route does where the selector would
   choose piecewise (at the selector's estimate), and elsewhere once its counted work passes a global solve's
   minimum budget, `initial_sweep_allowance` global sweeps priced in binary64 operations

@@ -75,7 +75,9 @@ numerical test, and the exact factorisation tells them apart.
 Exact inputs of degree 1 to 4 skip the choice: the closed forms answer them, with the discriminant
 computed exactly to tell a multiple root from distinct ones, and real from nonreal roots of real input. For everything else, a selector reads the input and chooses between the
 secular route and the local-model route by a cost estimate
-computed in exact integers, so the choice is the same on every machine. The secular route can engage a certified
+computed in exact integers, so the choice is the same on every machine. One order is not: on dense polynomials of
+high degree, whether the first pass in doubles is tried before the local-model route depends on whether the CPU
+has AVX2 and FMA, so two machines can return different, equally certified, boxes. The secular route can engage a certified
 subdivision search alongside its numerical iteration. The work budget accounts for both searches; a resource stop
 returns the certified information obtained so far. Starting subdivision conditionally does not promise a bounded
 delay to accuracy for every input. Whichever route answers checks its certificates against the original input, so a poor

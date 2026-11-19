@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(CertPolySolve VERSION 0.5.1 LANGUAGES C CXX)
+project(CertPolySolve VERSION 0.6.0 LANGUAGES C CXX)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(GNUInstallDirs)

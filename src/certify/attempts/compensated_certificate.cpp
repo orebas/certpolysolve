@@ -28,6 +28,7 @@
 #include "core/resource_limits.hpp"
 #include "core/raii.hpp"
 #include <algorithm>
+#include <bit>
 #include <cfloat>
 #include <cmath>
 #include <limits>
@@ -147,8 +148,10 @@ CompensatedCertificate::CompensatedCertificate(const acb_poly_t polynomial) {
     // Whether some coefficient carries an error before the rounding allowance: a ball's radius, or what the two words
     // leave out (error below is that sum inflated, never 0 since the inflation adds a subnormal).
     bool carried = false;
+    bool real = true;
     for (slong k = 0; k <= n; ++k) {
         const acb_srcptr c = polynomial->coeffs + k;
+        real = real && arb_is_zero(acb_imagref(c));
         Term &t = terms[static_cast<size_t>(k)];
         double errors[2] = {0, 0};
         for (int part = 0; part < 2; ++part) {
@@ -199,84 +202,40 @@ CompensatedCertificate::CompensatedCertificate(const acb_poly_t polynomial) {
             second[static_cast<size_t>(k)] = mul_up(static_cast<double>(k) * static_cast<double>(k - 1), size);
     }
     errors_ = carried;
+    real_ = real;
+    error_.resize(terms.size());
+    for (size_t k = 0; k < terms.size(); ++k)
+        error_[k] = terms[k].error;
     terms_ = std::move(terms);
     first_ = std::move(slope);
     second_ = std::move(second);
 }
 
-CompensatedEvaluation CompensatedCertificate::evaluate(double xr, double xi) const {
-    CompensatedEvaluation out;
-    out.x_re = xr;
-    out.x_im = xi;
+bool CompensatedCertificate::begin_evaluation(CompensatedEvaluation &out) const {
+    const double xr = out.x_re, xi = out.x_im;
     if (!available() || !std::isfinite(xr) || !std::isfinite(xi) || (xr == 0 && xi == 0))
-        return out;
+        return false;
     const uint64_t n = terms_.size() - 1;
     const double modulus = modulus_upper(xr, xi);
     if (!std::isfinite(modulus) || !(modulus > 0))
-        return out;
+        return false;
     // max(1, |x|)^k <= amplification for every k up to the degree: the most an absolute error made below binary64's
     // normal range can grow on its way to the result. Nothing else is admitted or refused here: an overflow anywhere
     // below leaves a value or a bound non-finite, and the tier declines.
     const double amplification = modulus >= 1 ? power_up(modulus, n) : 1;
     if (!std::isfinite(amplification))
-        return out;
+        return false;
     out.modulus = modulus;
     out.amplification = amplification;
-    const Term &top = terms_.back();
-    // The compensated Horner scheme. With S_k the exact partial sums for the coefficients hi + lo (S_n = a_n,
-    // S_k = S_(k+1) x + a_k) and s_k the rounded ones, every step is split exactly:
-    //     s_(k+1) x + a_k = s_k + t_k,  t_k = sigma + h1 - h2 + h5 + lo_re + i (sigma' + h3 + h4 + h6 + lo_im)
-    // (Cameron and Graillat 2024, Theorems 2.4 and 2.5), up to 2^-1074 for each of the four TwoProd below the normal
-    // range. Hence S_k - s_k = sum_(j >= k) t_j x^(j - k), and p(x) = s_0 + E(x), E(x) = sum_j t_j x^j, which the
-    // correction c evaluates by Horner's scheme on the rounded t_j.
-    double sr = top.re_hi, si = top.im_hi;
-    double cr = top.re_lo, ci = top.im_lo; // t_n = the leading coefficient's low word, exactly
-    double dr = 0, di = 0;                 // the derivative recurrence on the rounded s
-    // The bounds' accumulators, nonnegative, rounded to nearest (their roundings are counted below):
-    //   terms        = sum_j T_j X^j,             T_j >= |t_j| (the moduli of t_j's terms, by |Re| + |Im|)
-    //   terms_slope  = sum_j j T_j X^(j - 1)
-    //   values       = sum_(k < n) (|Re s_(k+1)| + |Im s_(k+1)|) X^k
-    //   errors       = sum_k error_k X^k
-    //   errors_slope = sum_k k error_k X^(k - 1)
-    double terms = std::abs(top.re_lo) + std::abs(top.im_lo), terms_slope = 0, values = 0;
-    double errors = top.error, errors_slope = 0;
-    const double X = modulus;
-    for (uint64_t k = n; k-- > 0;) {
-        const Term &a = terms_[k];
-        // d = d x + s_(k+1)
-        {
-            const double pr = dr * xr - di * xi, pi = dr * xi + di * xr;
-            dr = pr + sr;
-            di = pi + si;
-        }
-        values = values * X + (std::abs(sr) + std::abs(si));
-        // s x as w + x' + y + z exactly (TwoProdCmplx), then w + hi = s' + sigma (TwoSumCmplx).
-        const double g1 = sr * xr, h1 = std::fma(sr, xr, -g1);
-        const double g2 = si * xi, h2 = std::fma(si, xi, -g2);
-        const double g3 = sr * xi, h3 = std::fma(sr, xi, -g3);
-        const double g4 = si * xr, h4 = std::fma(si, xr, -g4);
-        const auto w_re = machine::DoubleDouble::sum(g1, -g2);
-        const auto w_im = machine::DoubleDouble::sum(g3, g4);
-        const auto s_re = machine::DoubleDouble::sum(w_re.hi, a.re_hi);
-        const auto s_im = machine::DoubleDouble::sum(w_im.hi, a.im_hi);
-        const double tr = (((h1 - h2) + w_re.lo) + s_re.lo) + a.re_lo;
-        const double ti = (((h3 + h4) + w_im.lo) + s_im.lo) + a.im_lo;
-        const double T = (((((((((std::abs(h1) + std::abs(h2)) + std::abs(w_re.lo)) + std::abs(s_re.lo)) +
-                               std::abs(a.re_lo)) + std::abs(h3)) + std::abs(h4)) + std::abs(w_im.lo)) +
-                           std::abs(s_im.lo)) + std::abs(a.im_lo));
-        // c = c x + t
-        {
-            const double pr = cr * xr - ci * xi, pi = cr * xi + ci * xr;
-            cr = pr + tr;
-            ci = pi + ti;
-        }
-        terms_slope = terms_slope * X + terms;
-        terms = terms * X + T;
-        errors_slope = errors_slope * X + errors;
-        errors = errors * X + a.error;
-        sr = s_re.hi;
-        si = s_im.hi;
-    }
+    return true;
+}
+
+void CompensatedCertificate::finish_evaluation(CompensatedEvaluation &out, const compensated_kernel::Sums &sums) const {
+    const uint64_t n = terms_.size() - 1;
+    const double amplification = out.amplification;
+    const double sr = sums.sr, si = sums.si, cr = sums.cr, ci = sums.ci, dr = sums.dr, di = sums.di;
+    const double terms = sums.terms, terms_slope = sums.terms_slope, values = sums.values;
+    const double errors = sums.errors, errors_slope = sums.errors_slope;
     out.value_re = sr;
     out.value_im = si;
     out.correction_re = cr;
@@ -308,30 +267,143 @@ CompensatedEvaluation CompensatedCertificate::evaluate(double xr, double xi) con
                              allowance);
     out.ok = std::isfinite(out.value_error) && std::isfinite(out.slope_error) && std::isfinite(sr) &&
              std::isfinite(si) && std::isfinite(cr) && std::isfinite(ci) && std::isfinite(dr) && std::isfinite(di);
+}
+
+CompensatedEvaluation CompensatedCertificate::evaluate(double xr, double xi) const {
+    CompensatedEvaluation out;
+    evaluate_many(std::span<const double>(&xr, 1), std::span<const double>(&xi, 1),
+                  std::span<CompensatedEvaluation>(&out, 1));
     return out;
+}
+
+// The compensated Horner scheme (compensated_kernel.cpp has the loop and its splitting): p(x) = s_0 + E(x) exactly,
+// E the polynomial of the rounding errors t_j, which the correction c evaluates by Horner's scheme on the rounded
+// t_j; the slope d is the derivative recurrence on the rounded s. begin_evaluation and finish_evaluation are the
+// evaluation's parts before and after the loop, a point at a time; the loop runs at up to compensated_kernel::group
+// admitted points at once.
+void CompensatedCertificate::evaluate_many(std::span<const double> x_re, std::span<const double> x_im,
+                                           std::span<CompensatedEvaluation> out) const {
+    constexpr size_t group = compensated_kernel::group;
+    size_t waiting[group];
+    size_t count = 0;
+    const auto run = [&] {
+        if (!count)
+            return;
+        const uint64_t n = terms_.size() - 1;
+        compensated_kernel::Sums sums[group];
+#ifdef CERTPOLYSOLVE_HAVE_AVX2_FMA_KERNELS
+        if (kernel_variant() == KernelVariant::Avx2Fma) {
+            // A group that is not full repeats its last point: the kernel's four results are each a function of
+            // their own point alone.
+            double xr[group], xi[group], X[group];
+            for (size_t m = 0; m < group; ++m) {
+                const CompensatedEvaluation &e = out[waiting[std::min(m, count - 1)]];
+                xr[m] = e.x_re, xi[m] = e.x_im, X[m] = e.modulus;
+            }
+            compensated_kernel::avx2_fma(terms_.data(), n, xr, xi, X, sums);
+        } else
+#endif
+            for (size_t m = 0; m < count; ++m) {
+                const CompensatedEvaluation &e = out[waiting[m]];
+                sums[m] = compensated_kernel::reference(terms_.data(), n, e.x_re, e.x_im, e.modulus);
+            }
+        for (size_t m = 0; m < count; ++m)
+            finish_evaluation(out[waiting[m]], sums[m]);
+        count = 0;
+    };
+    for (size_t i = 0; i < out.size(); ++i) {
+        out[i] = {};
+        out[i].x_re = x_re[i];
+        out[i].x_im = x_im[i];
+        if (!begin_evaluation(out[i]))
+            continue;
+        waiting[count++] = i;
+        if (count == group)
+            run();
+    }
+    run();
+}
+
+bool CompensatedCertificate::second_derivative_begin(double modulus, double reach, double &Y,
+                                                     double &amplification) const {
+    const uint64_t n = terms_.size() - 1;
+    Y = add_up(modulus, reach); // >= |z| on the disk
+    if (!std::isfinite(Y))
+        return false;
+    amplification = Y >= 1 ? power_up(Y, n) : 1; // >= max(1, Y)^k for every k up to the degree
+    return std::isfinite(amplification);
+}
+
+double CompensatedCertificate::second_derivative_finish(double sum, double amplification) const {
+    const uint64_t n = terms_.size() - 1;
+    // 2 (n - 2) roundings; n - 2 products below the normal range at most, each off by 2^-1075 and reaching the sum
+    // times at most max(1, Y)^n (n 2^-1074 is exact).
+    const double allowance = mul_up(static_cast<double>(n) * smallest_subnormal, amplification);
+    return add_up(inflated(sum, 2 * n), allowance);
 }
 
 double CompensatedCertificate::second_derivative_bound(double modulus, double reach) const {
     const uint64_t n = terms_.size() - 1;
     if (n < 2)
         return 0;
-    const double Y = add_up(modulus, reach); // >= |z| on the disk
-    if (!std::isfinite(Y))
+    double Y = 0, amplification = 1;
+    if (!second_derivative_begin(modulus, reach, Y, amplification))
         return std::numeric_limits<double>::infinity();
-    const double amplification = Y >= 1 ? power_up(Y, n) : 1; // >= max(1, Y)^k for every k up to the degree
-    if (!std::isfinite(amplification))
-        return std::numeric_limits<double>::infinity();
-    double acc = second_[n];
-    for (uint64_t k = n; k-- > 2;)
-        acc = acc * Y + second_[k];
-    // 2 (n - 2) roundings; n - 2 products below the normal range at most, each off by 2^-1075 and reaching the sum
-    // times at most max(1, Y)^n (n 2^-1074 is exact).
-    const double allowance = mul_up(static_cast<double>(n) * smallest_subnormal, amplification);
-    return add_up(inflated(acc, 2 * n), allowance);
+    // The majorant of p'' at Y: second_[n], then the sum times Y plus second_[k], k = n - 1, ..., 2.
+    return second_derivative_finish(compensated_kernel::majorant(second_.data(), n, 2, Y), amplification);
+}
+
+void CompensatedCertificate::majorants(const double *coefficients, uint64_t top, uint64_t bottom,
+                                       std::span<const double> x, std::span<double> out) {
+    size_t done = 0;
+#ifdef CERTPOLYSOLVE_HAVE_AVX2_FMA_KERNELS
+    if (kernel_variant() == KernelVariant::Avx2Fma) {
+        constexpr size_t group = compensated_kernel::majorant_group;
+        // A group that is not full repeats its last point: each sum is a function of its own point alone. The
+        // recurrence is a chain of dependent operations, so a group takes about as long as one point alone.
+        for (; done < x.size(); done += group) {
+            const size_t here = std::min(group, x.size() - done);
+            double at[group], sums[group];
+            for (size_t m = 0; m < group; ++m)
+                at[m] = x[done + std::min(m, here - 1)];
+            compensated_kernel::majorants_avx2(coefficients, top, bottom, at, sums);
+            for (size_t m = 0; m < here; ++m)
+                out[done + m] = sums[m];
+        }
+        return;
+    }
+#endif
+    for (; done < x.size(); ++done)
+        out[done] = compensated_kernel::majorant(coefficients, top, bottom, x[done]);
 }
 
 bool CompensatedCertificate::certify(Root &root, const acb_t point, const cps_options &options, slong precision,
-                                     CompensatedEvaluation *seen) const {
+                                     CompensatedEvaluation *seen, const CompensatedAhead *ahead) const {
+    CompensatedRetry retry;
+    if (certify_first(root, point, options, precision, seen, ahead, retry))
+        return true;
+    for (unsigned k = 0; k < heuristics::compensated_newton_retries && retry.available; ++k) {
+        const CompensatedRetry from = retry;
+        if (certify_again(root, from, options, precision, nullptr, retry))
+            return true;
+    }
+    return false;
+}
+
+namespace {
+// Whether what evaluate_ahead made stands for the binary64 point (xr, xi) at `precision`: made for this very point
+// (the same bits) and this precision.
+bool made_for(const CompensatedAhead *ahead, double xr, double xi, slong precision) {
+    return ahead && ahead->state != CompensatedAhead::State::None && ahead->precision == precision &&
+           std::bit_cast<uint64_t>(ahead->x_re) == std::bit_cast<uint64_t>(xr) &&
+           std::bit_cast<uint64_t>(ahead->x_im) == std::bit_cast<uint64_t>(xi);
+}
+} // namespace
+
+bool CompensatedCertificate::certify_first(Root &root, const acb_t point, const cps_options &options, slong precision,
+                                           CompensatedEvaluation *seen, const CompensatedAhead *ahead,
+                                           CompensatedRetry &retry) const {
+    retry = {};
     if (seen)
         *seen = {};
     // A goal at or beyond the two-word precision is never within the tier's reach.
@@ -339,18 +411,133 @@ bool CompensatedCertificate::certify(Root &root, const acb_t point, const cps_op
         return false;
     const double xr = arf_to_binary64(arb_midref(acb_realref(point)), ARF_RND_NEAR);
     const double xi = arf_to_binary64(arb_midref(acb_imagref(point)), ARF_RND_NEAR);
-    CompensatedRetry retry;
-    if (!may_certify(xr, xi, options))
+    // What evaluate_ahead found stands for may_certify's answer here and for what prove would compute first.
+    const bool known = made_for(ahead, xr, xi, precision);
+    if (known ? ahead->state == CompensatedAhead::State::Refused : !may_certify(xr, xi, options))
         return false;
-    if (prove(root, xr, xi, options, precision, &retry, seen))
-        return true;
-    for (unsigned k = 0; k < heuristics::compensated_newton_retries && retry.available; ++k) {
-        const CompensatedRetry from = retry;
-        retry = {};
-        if (may_certify(from.re, from.im, options) && prove(root, from.re, from.im, options, precision, &retry))
-            return true;
+    return prove(root, xr, xi, options, precision, &retry, seen, known ? ahead : nullptr);
+}
+
+bool CompensatedCertificate::certify_again(Root &root, const CompensatedRetry &from, const cps_options &options,
+                                           slong precision, const CompensatedAhead *ahead,
+                                           CompensatedRetry &retry) const {
+    const double xr = from.re, xi = from.im; // `from` may be `retry` itself
+    retry = {};
+    const bool known = made_for(ahead, xr, xi, precision);
+    if (known ? ahead->state == CompensatedAhead::State::Refused : !may_certify(xr, xi, options))
+        return false;
+    return prove(root, xr, xi, options, precision, &retry, nullptr, known ? ahead : nullptr);
+}
+
+void CompensatedCertificate::evaluate_ahead(acb_srcptr points, std::span<const slong> indices,
+                                            const cps_options &options, slong precision,
+                                            std::span<CompensatedAhead> ahead) const {
+    for (CompensatedAhead &a : ahead)
+        a = {};
+    // certify's own first test: with the tier unavailable or the goal beyond it, certify asks nothing.
+    if (!available() || options.bits >= static_cast<uint64_t>(machine::double_double_bits))
+        return;
+    constexpr size_t block = heuristics::compensated_ahead_points;
+    for (size_t first = 0; first < indices.size(); first += block) {
+        const size_t count = std::min(block, indices.size() - first);
+        // The binary64 point nearest each point the attempt asks about: its midpoint, where that is finite and not
+        // zero.
+        size_t asked[block];
+        double xr[block], xi[block];
+        size_t asking = 0;
+        for (size_t m = 0; m < count; ++m) {
+            const acb_srcptr point = points + indices[first + m];
+            if (!arf_is_finite(arb_midref(acb_realref(point))) || !arf_is_finite(arb_midref(acb_imagref(point))) ||
+                (arf_is_zero(arb_midref(acb_realref(point))) && arf_is_zero(arb_midref(acb_imagref(point)))))
+                continue;
+            CompensatedAhead &a = ahead[first + m];
+            a.x_re = arf_to_binary64(arb_midref(acb_realref(point)), ARF_RND_NEAR);
+            a.x_im = arf_to_binary64(arb_midref(acb_imagref(point)), ARF_RND_NEAR);
+            a.precision = precision;
+            asked[asking] = first + m;
+            xr[asking] = a.x_re;
+            xi[asking] = a.x_im;
+            ++asking;
+        }
+        ahead_group(asked, xr, xi, asking, options, precision, ahead);
     }
-    return false;
+}
+
+void CompensatedCertificate::evaluate_ahead_at(std::span<const double> x_re, std::span<const double> x_im,
+                                               const cps_options &options, slong precision,
+                                               std::span<CompensatedAhead> ahead) const {
+    for (CompensatedAhead &a : ahead)
+        a = {};
+    if (!available() || options.bits >= static_cast<uint64_t>(machine::double_double_bits))
+        return;
+    constexpr size_t block = heuristics::compensated_ahead_points;
+    for (size_t first = 0; first < ahead.size(); first += block) {
+        const size_t count = std::min(block, ahead.size() - first);
+        size_t asked[block];
+        double xr[block], xi[block];
+        for (size_t m = 0; m < count; ++m) {
+            CompensatedAhead &a = ahead[first + m];
+            a.x_re = x_re[first + m];
+            a.x_im = x_im[first + m];
+            a.precision = precision;
+            asked[m] = first + m;
+            xr[m] = a.x_re;
+            xi[m] = a.x_im;
+        }
+        ahead_group(asked, xr, xi, count, options, precision, ahead);
+    }
+}
+
+void CompensatedCertificate::ahead_group(const size_t *asked, double *x_re, double *x_im, size_t asking,
+                                         const cps_options &options, slong precision,
+                                         std::span<CompensatedAhead> ahead) const {
+    constexpr size_t block = heuristics::compensated_ahead_points;
+    const uint64_t n = terms_.size() - 1;
+    // 1. may_certify at each.
+    uint8_t admitted[block];
+    may_certify_many(std::span<const double>(x_re, asking), std::span<const double>(x_im, asking), options,
+                     std::span<uint8_t>(admitted, asking));
+    // 2. The evaluations at the admitted points.
+    size_t evaluated[block];
+    size_t evaluating = 0;
+    for (size_t k = 0; k < asking; ++k) {
+        CompensatedAhead &a = ahead[asked[k]];
+        if (!admitted[k]) {
+            a.state = CompensatedAhead::State::Refused;
+            continue;
+        }
+        a.state = CompensatedAhead::State::Evaluated;
+        evaluated[evaluating] = asked[k];
+        x_re[evaluating] = a.x_re; // refilled, in order, from the points' own records
+        x_im[evaluating] = a.x_im;
+        ++evaluating;
+    }
+    CompensatedEvaluation evaluations[block];
+    evaluate_many(std::span<const double>(x_re, evaluating), std::span<const double>(x_im, evaluating),
+                  std::span<CompensatedEvaluation>(evaluations, evaluating));
+    // 3. prove's geometry from each evaluation, and 4. its bound on |g''| over the larger circle's disk
+    //    (second_derivative_bound's steps, the majorants' sums together).
+    size_t bounded[block];
+    double Y[block], amplification[block], sums[block];
+    size_t with_sum = 0;
+    for (size_t k = 0; k < evaluating; ++k) {
+        CompensatedAhead &a = ahead[evaluated[k]];
+        a.evaluation = evaluations[k];
+        a.geometry = geometry(a.evaluation, options, precision);
+        if (!a.geometry.ok)
+            continue;
+        if (n < 2)
+            a.second = 0;
+        else if (!second_derivative_begin(a.evaluation.modulus, a.geometry.reach_out, Y[with_sum],
+                                          amplification[with_sum]))
+            a.second = std::numeric_limits<double>::infinity();
+        else
+            bounded[with_sum++] = evaluated[k];
+    }
+    if (with_sum)
+        majorants(second_.data(), n, 2, std::span<const double>(Y, with_sum), std::span<double>(sums, with_sum));
+    for (size_t j = 0; j < with_sum; ++j)
+        ahead[bounded[j]].second = second_derivative_finish(sums[j], amplification[j]);
 }
 
 // A necessary condition of prove's test, from what the evaluation's value bound must contain. With X = |x| from above
@@ -367,22 +554,21 @@ bool CompensatedCertificate::certify(Root &root, const acb_t point, const cps_op
 //      K (|q| + r)^2 / 2 < |D| r, K >= K0 = second_derivative_bound(X, 0) (the test's K is the same majorant over a
 //      larger disk), and r <= 2 c |q| (c = 2^-(bits + 5) and the bound's rounding): then |q| < 4 c U / K0 and
 //      r < 8 c^2 U / K0.
-bool CompensatedCertificate::may_certify(double xr, double xi, const cps_options &options) const {
+bool CompensatedCertificate::may_certify_begin(double xr, double xi, const cps_options &options, double &X,
+                                               double &amplification) const {
     if (!errors_ || !options.absolute_tolerance.zero() || !available())
-        return true;
-    const double X = modulus_upper(xr, xi);
+        return false;
+    X = modulus_upper(xr, xi);
     if (!std::isfinite(X) || !(X > 0))
-        return true; // evaluate declines here itself
+        return false; // evaluate declines here itself
     const uint64_t n = terms_.size() - 1;
-    double S = terms_.back().error;
-    for (uint64_t k = n; k-- > 0;)
-        S = S * X + terms_[k].error;
-    const double amplification = X >= 1 ? power_up(X, n) : 1;
-    if (!std::isfinite(amplification))
-        return true;
-    double slope = first_[n];
-    for (uint64_t k = n; k-- > 1;)
-        slope = slope * X + first_[k];
+    amplification = X >= 1 ? power_up(X, n) : 1;
+    return std::isfinite(amplification);
+}
+
+bool CompensatedCertificate::may_certify_finish(double X, double amplification, double S, double slope, double K0,
+                                                const cps_options &options) const {
+    const uint64_t n = terms_.size() - 1;
     // 2 (n - 1) roundings in the majorant's Horner scheme; the absolute errors as evaluate's slope allowance.
     const double allowance =
         mul_up(17.0 * static_cast<double>(n) * static_cast<double>(n + 1) * smallest_subnormal, amplification);
@@ -391,7 +577,6 @@ bool CompensatedCertificate::may_certify(double xr, double xi, const cps_options
     const auto guard = static_cast<uint64_t>(resources::precision_sum(options.bits, 5));
     const double c = std::ldexp(1 + 0x1p-52, -static_cast<int>(std::min<uint64_t>(guard, std::numeric_limits<int>::max())));
     const double near = mul_up(2 * X, c);
-    const double K0 = second_derivative_bound(X, 0);
     // The ratio first: 8 c^2 U itself can fall below binary64's range, where rounding up would make it a subnormal.
     const double far =
         K0 > 0 ? mul_up(mul_up(8 * c, c), inflated(U / K0, 1)) : std::numeric_limits<double>::infinity();
@@ -400,15 +585,64 @@ bool CompensatedCertificate::may_certify(double xr, double xi, const cps_options
     return !(std::max(S, allowance) >= mul_up(2 * R, U));
 }
 
-bool CompensatedCertificate::prove(Root &root, double xr, double xi, const cps_options &options, slong precision,
-                                   CompensatedRetry *retry, CompensatedEvaluation *seen) const {
-    if (!available() || options.bits >= static_cast<uint64_t>(machine::double_double_bits))
-        return false;
-    const auto e = evaluate(xr, xi);
-    if (seen)
-        *seen = e;
+bool CompensatedCertificate::may_certify(double xr, double xi, const cps_options &options) const {
+    double X = 0, amplification = 1;
+    if (!may_certify_begin(xr, xi, options, X, amplification))
+        return true;
+    const uint64_t n = terms_.size() - 1;
+    // S = sum_k error_k X^k and the majorant of p' at X, each by Horner's scheme from the leading coefficient.
+    const double S = compensated_kernel::majorant(error_.data(), n, 0, X);
+    const double slope = compensated_kernel::majorant(first_.data(), n, 1, X);
+    return may_certify_finish(X, amplification, S, slope, second_derivative_bound(X, 0), options);
+}
+
+void CompensatedCertificate::may_certify_many(std::span<const double> x_re, std::span<const double> x_im,
+                                              const cps_options &options, std::span<uint8_t> admitted) const {
+    constexpr size_t block = heuristics::compensated_ahead_points;
+    for (size_t first = 0; first < admitted.size(); first += block) {
+        const size_t count = std::min(block, admitted.size() - first);
+        // The points whose answer needs the sums, with X and the amplification of each.
+        size_t pending[block];
+        double X[block], amplification[block];
+        size_t waiting = 0;
+        for (size_t m = 0; m < count; ++m) {
+            admitted[first + m] = 1;
+            if (may_certify_begin(x_re[first + m], x_im[first + m], options, X[waiting], amplification[waiting]))
+                pending[waiting++] = first + m;
+        }
+        if (!waiting)
+            continue;
+        const uint64_t n = terms_.size() - 1;
+        double S[block], slope[block], K0[block];
+        majorants(error_.data(), n, 0, std::span<const double>(X, waiting), std::span<double>(S, waiting));
+        majorants(first_.data(), n, 1, std::span<const double>(X, waiting), std::span<double>(slope, waiting));
+        // K0 = second_derivative_bound(X, 0) at each: its steps, the sums together.
+        size_t bounded[block];
+        double Y[block], amplification_Y[block], sums[block];
+        size_t with_sum = 0;
+        for (size_t k = 0; k < waiting; ++k) {
+            if (n < 2)
+                K0[k] = 0;
+            else if (!second_derivative_begin(X[k], 0, Y[with_sum], amplification_Y[with_sum]))
+                K0[k] = std::numeric_limits<double>::infinity();
+            else
+                bounded[with_sum++] = k;
+        }
+        if (with_sum)
+            majorants(second_.data(), n, 2, std::span<const double>(Y, with_sum), std::span<double>(sums, with_sum));
+        for (size_t j = 0; j < with_sum; ++j)
+            K0[bounded[j]] = second_derivative_finish(sums[j], amplification_Y[j]);
+        for (size_t k = 0; k < waiting; ++k)
+            admitted[pending[k]] = may_certify_finish(X[k], amplification[k], S[k], slope[k], K0[k], options);
+    }
+}
+
+// prove's steps before its tests: Newton's step from the evaluation, the centre and the goal's half-width about it.
+CompensatedGeometry CompensatedCertificate::geometry(const CompensatedEvaluation &e, const cps_options &options,
+                                                     slong precision) const {
+    CompensatedGeometry g;
     if (!e.ok)
-        return false;
+        return g;
     // The Newton step q ~ V / D, V = s_0 + c_0 rounded, D = d_0: the textbook quotient on parts scaled by 2^-f so that
     // D's larger part lies in [1, 2) (|D|^2 then lies in [1, 8]). |V / D - q| <= (sqrt(2) gamma_4 (1 + u) + u) |V/D|
     // (Higham, Lemma 3.5, and the rounding of V) <= 7 u |q| (1 + 8 u), and below the normal range the scaled V's
@@ -416,23 +650,23 @@ bool CompensatedCertificate::prove(Root &root, double xr, double xi, const cps_o
     const double vr = e.value_re + e.correction_re, vi = e.value_im + e.correction_im;
     const double largest = std::max(std::abs(e.slope_re), std::abs(e.slope_im));
     if (!(largest > 0) || !std::isfinite(largest) || !std::isfinite(vr) || !std::isfinite(vi))
-        return false;
+        return g;
     const int f = std::ilogb(largest);
     const double sr = std::ldexp(e.slope_re, -f), si = std::ldexp(e.slope_im, -f);
     const double wr = std::ldexp(vr, -f), wi = std::ldexp(vi, -f);
     const double den = sr * sr + si * si;
     const double qr = (wr * sr + wi * si) / den, qi = (wi * sr - wr * si) / den;
     if (!std::isfinite(qr) || !std::isfinite(qi))
-        return false;
+        return g;
     const double step = modulus_upper(qr, qi);
     const double step_error = add_up(mul_up(8 * unit_roundoff, step), 8 * smallest_subnormal);
     // |D| from below.
     const double slope_lower = modulus_lower(e.slope_re, e.slope_im);
     if (!(slope_lower > 0))
-        return false;
+        return g;
     // The centre z1 = x - q, exactly as two words a part.
-    const auto z_re = machine::DoubleDouble::sum(xr, -qr);
-    const auto z_im = machine::DoubleDouble::sum(xi, -qi);
+    const auto z_re = machine::DoubleDouble::sum(e.x_re, -qr);
+    const auto z_im = machine::DoubleDouble::sum(e.x_im, -qi);
     ComplexBall center;
     {
         Float word;
@@ -446,7 +680,7 @@ bool CompensatedCertificate::prove(Root &root, double xr, double xi, const cps_o
                 ARF_PREC_EXACT, ARF_RND_DOWN);
     }
     if (acb_is_zero(center.value()))
-        return false;
+        return g;
     // The goal's half-width about z1, as a double from below (a smaller rectangle meets the goal as well). A half-width
     // below binary64's normal range is left to the ball certificate: above it, 5r/4 below is rounded by a relative u.
     RealBall goal;
@@ -455,10 +689,27 @@ bool CompensatedCertificate::prove(Root &root, double xr, double xi, const cps_o
     arb_get_lbound_arf(goal_lower.value(), goal.value(), precision);
     const double r = arf_to_binary64(goal_lower.value(), ARF_RND_DOWN);
     if (!(r >= DBL_MIN) || !std::isfinite(r))
-        return false;
-    // The majorant of |g''| over the disk about x that holds both circles: |z - x| <= |q| + 2r.
-    const double reach_out = add_up(step, 2 * r);
-    const double second = second_derivative_bound(e.modulus, reach_out);
+        return g;
+    g.step = step;
+    g.step_error = step_error;
+    g.slope_lower = slope_lower;
+    g.z_re_hi = z_re.hi, g.z_re_lo = z_re.lo;
+    g.z_im_hi = z_im.hi, g.z_im_lo = z_im.lo;
+    g.center = std::move(center);
+    g.r = r;
+    // The majorant of |g''| is taken over the disk about x that holds both circles: |z - x| <= |q| + 2r.
+    g.reach_out = add_up(step, 2 * r);
+    g.ok = true;
+    return g;
+}
+
+// prove's tests and its publication, from the evaluation e, its geometry g and
+// second = second_derivative_bound(e.modulus, g.reach_out).
+bool CompensatedCertificate::finish_proof(Root &root, const CompensatedEvaluation &e, const CompensatedGeometry &g,
+                                          double second, const cps_options &options, slong precision,
+                                          CompensatedRetry *retry) const {
+    const double step = g.step, step_error = g.step_error, slope_lower = g.slope_lower, r = g.r;
+    const ComplexBall &center = g.center;
     if (!std::isfinite(second))
         return false;
     // Rouché's theorem on |z - z1| = rho against the line l(z) = V + D (z - x), whose one zero is x - V/D, within
@@ -512,9 +763,9 @@ bool CompensatedCertificate::prove(Root &root, double xr, double xi, const cps_o
         // |q| + 2r about x, where Kantorovich's own is 2|q|: a choice of where to evaluate next, which proves or
         // refuses by itself): a root lies within 2|q| of x and Newton's iteration from x converges to it, so the point
         // nearest the step's end is closer to it than x. A point of a cluster has h of at least about 1.
-        if (retry && (z_re.hi != xr || z_im.hi != xi) && mul_up(second, step) <= 0.5 * slope_lower) {
-            retry->re = z_re.hi;
-            retry->im = z_im.hi;
+        if (retry && (g.z_re_hi != e.x_re || g.z_im_hi != e.x_im) && mul_up(second, step) <= 0.5 * slope_lower) {
+            retry->re = g.z_re_hi;
+            retry->im = g.z_im_hi;
             retry->available = true;
         }
         return false;
@@ -544,6 +795,26 @@ bool CompensatedCertificate::prove(Root &root, double xr, double xi, const cps_o
         "original-coefficient binary64 compensated evaluation, Rouche on two circles about the Newton step";
     root = std::move(proved);
     return true;
+}
+
+
+bool CompensatedCertificate::prove(Root &root, double xr, double xi, const cps_options &options, slong precision,
+                                   CompensatedRetry *retry, CompensatedEvaluation *seen,
+                                   const CompensatedAhead *ahead) const {
+    if (!available() || options.bits >= static_cast<uint64_t>(machine::double_double_bits))
+        return false;
+    if (ahead) {
+        // The evaluation at (xr, xi), its geometry at this precision and the bound on |g''|, made before.
+        if (seen)
+            *seen = ahead->evaluation;
+        return ahead->geometry.ok &&
+               finish_proof(root, ahead->evaluation, ahead->geometry, ahead->second, options, precision, retry);
+    }
+    const auto e = evaluate(xr, xi);
+    if (seen)
+        *seen = e;
+    const CompensatedGeometry g = geometry(e, options, precision);
+    return g.ok && finish_proof(root, e, g, second_derivative_bound(e.modulus, g.reach_out), options, precision, retry);
 }
 
 bool CompensatedCertificate::refine(acb_ptr points, int64_t n, const std::vector<int64_t> &moving, int64_t goal_bits,

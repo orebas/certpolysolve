@@ -86,7 +86,7 @@ template <class Exponents> void route_by_admission(AutoSelection &result, const 
         result.route = AutoRoute::Piecewise;
         result.reason = "piecewise-estimate-below-global-sweep-budget";
         // The global recipes begin with a certificate attempt (a binary64
-        // packet and two evaluation passes: machine_newton_cover) that
+        // packet and a certificate at every point: machine_newton_cover) that
         // finishes a well-conditioned input in binary64's range outright,
         // and that can be tried before piecewise too. Whether it will
         // succeed is not known beforehand, so the order is chosen by cost.
@@ -110,12 +110,27 @@ template <class Exponents> void route_by_admission(AutoSelection &result, const 
         if (admission.support > 2 && admission.support * 4 <= admission.degree) {
             products = DiskSparsePolynomialEvaluator::plan(exponents(admission.zero_order)).multiplications;
         }
-        const double attempt = static_cast<double>(heuristics::certificate_attempt_point_operations(
-                                   admission.degree, admission.support, products)) *
-                               static_cast<double>(admission.degree);
-        if (static_cast<double>(admission.work) >= std::numbers::phi * attempt) {
+        // The attempt's price by a kernel variant's table (heuristics::AttemptPrices, in quarters of an operation;
+        // the division by four is exact in binary64, so the reference table's price is the product it was). The
+        // reference's table decides first, on every CPU. Where it leaves piecewise first and the kernels run a
+        // variant, that variant's table is asked: its prices are at most the reference's, so it can only add
+        // inputs, and the reason names it.
+        const auto price = [&](const heuristics::AttemptPrices &prices) {
+            return static_cast<double>(heuristics::certificate_attempt_point_quarters(prices, admission.degree,
+                                                                                      admission.support, products)) *
+                   static_cast<double>(admission.degree) / static_cast<double>(heuristics::attempt_price_quarters);
+        };
+        const double work = static_cast<double>(admission.work);
+        if (work >= std::numbers::phi * price(heuristics::reference_attempt_prices)) {
             result.attempt_first = true;
             result.reason = "certificate-attempt-before-piecewise";
+        } else if (price_variant() == KernelVariant::Avx2Fma &&
+                   work >= std::numbers::phi * price(heuristics::avx2_fma_attempt_prices)) {
+            result.attempt_first = true;
+            result.attempt_prices = KernelVariant::Avx2Fma;
+            result.attempt_pass_limit =
+                heuristics::attempt_pass_limit(heuristics::avx2_fma_attempt_prices, admission.degree);
+            result.reason = "certificate-attempt-before-piecewise-at-avx2-fma-prices";
         }
     }
 }

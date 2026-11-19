@@ -79,6 +79,8 @@ cps_result ComplexQueryState::advance(cps_options &next, uint64_t degree) {
         auto config = maintained_piecewise_config();
         config.certificate_attempt = selection.attempt_first;
         config.certificate_attempt_fallback = selection.piecewise_operations;
+        config.certificate_attempt_pass_limit = selection.attempt_pass_limit;
+        config.certificate_attempt_prices = selection.attempt_prices;
         if (selection.route == AutoRoute::Piecewise)
             config.regime_exit_estimate = selection.piecewise_operations;
         else if (next.method == CPS_METHOD_PIECEWISE) {

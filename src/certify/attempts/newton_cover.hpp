@@ -6,6 +6,7 @@
 // attempts/newton_cover.cpp. Proof predicates live in the parent certify module.
 #include <certpolysolve/certpolysolve.h>
 #include "core/cover.hpp"
+#include "core/heuristics.hpp"
 #include "core/number.hpp"
 #include <algorithm>
 #include <cstdint>
@@ -53,11 +54,20 @@ struct PartialNewtonCover {
 // operations (auto_selection.cpp): the attempt as a whole (its binary64 packet's bound, its certificates and
 // refusals, its repair rounds) spends no more, so a failed attempt at most doubles that route's cost. Zero means
 // the global recipes' own minimum budget, initial_sweep_allowance sweeps of degree x (degree + support).
+//
+// pass_limit: where the compensated tier's first pass passes on more points than this, the attempt ends there and
+// returns false (heuristics::attempt_pass_limit: the attempt a kernel variant's prices put before piecewise). Zero
+// means no limit.
+//
+// packet_prices: the price table at which the binary64 packet's quanta are charged to fallback_operations, where it
+// is not the reference's (the same attempt: a kernel variant's prices put it first, weighed against that allowance).
+// Null: the reference's prices, as for every other caller.
 bool machine_newton_cover(std::vector<Root> &, PolynomialSource &, acb_srcptr initial,
                           const cps_options &, slong precision, bool allow_underflow,
                           certpolysolve::detail::CandidateStatistics &, bool coefficient_bound = false, const EnginePolicy *diagnostic = nullptr,
                           std::unique_ptr<RootVector> *retained_proposals = nullptr,
                           bool *machine_converged = nullptr, slong *certificate_bits = nullptr,
                           bool scaled_packet = true, PartialNewtonCover *partial = nullptr,
-                          std::span<const uint8_t> settled = {}, uint64_t fallback_operations = 0);
+                          std::span<const uint8_t> settled = {}, uint64_t fallback_operations = 0,
+                          uint64_t pass_limit = 0, const heuristics::AttemptPrices *packet_prices = nullptr);
 } // namespace certpolysolve::detail
