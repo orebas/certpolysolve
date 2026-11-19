@@ -116,16 +116,9 @@ template <class R, class F> Outcome<R> observe(F f) {
 }
 size_t binary64_compared = 0, scaled_compared = 0, secular_refusals = 0;
 template <class R> void check(const Outcome<R> &shared, const Outcome<R> &reference, const char *what, size_t trial) {
-    const bool refusals_match = shared.refused == reference.refused;
-    const bool values_match = same_bits(shared.value, reference.value);
-    const bool flags_match = shared.flags == reference.flags;
-    const bool matches = refusals_match && values_match && flags_match;
-    require(matches, what, trial);
-    if (!matches && failures <= 20) {
-        std::fprintf(stderr, "  %s: value bits match = %d, refusal matches = %d, exception flags = 0x%x (shared), 0x%x (reference)\n",
-                     std::is_same_v<R, double> ? "binary64" : "scaled binary64", values_match, refusals_match,
-                     static_cast<unsigned>(shared.flags), static_cast<unsigned>(reference.flags));
-    }
+    require(shared.refused == reference.refused && same_bits(shared.value, reference.value) &&
+                shared.flags == reference.flags,
+            what, trial);
     ++(std::is_same_v<R, double> ? binary64_compared : scaled_compared);
 }
 

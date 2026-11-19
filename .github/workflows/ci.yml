@@ -17,7 +17,7 @@ jobs:
       matrix:
         include:
           - name: macOS Arm64 Apple Clang
-            runner: macos-26
+            runner: macos-15
             cc: clang
             cxx: clang++
             generator: Unix Makefiles
@@ -65,7 +65,7 @@ jobs:
       - name: Build
         id: build
         shell: bash
-        run: cmake --build build/ci --config Release --parallel "$BUILD_JOBS"
+        run: cmake --build build/ci --config Release --parallel "$BUILD_JOBS" -- -k
 
       - name: Run CTest
         shell: bash
