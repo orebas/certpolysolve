@@ -46,6 +46,7 @@ jobs:
           #define _GNU_SOURCE
           #include <dlfcn.h>
           #include <fenv.h>
+          #include <inttypes.h>
           #include <stdarg.h>
           #include <stdio.h>
           #include <string.h>
@@ -54,6 +55,8 @@ jobs:
           static int (*read_flags)(int);
           static _Thread_local unsigned previous_flags;
           static _Thread_local unsigned current_flags;
+          static _Thread_local void *previous_site;
+          static _Thread_local void *current_site;
 
           __attribute__((constructor)) static void resolve_symbols(void) {
               read_flags = dlsym(RTLD_NEXT, "fetestexcept");
@@ -64,15 +67,20 @@ jobs:
               const int flags = read_flags(mask);
               previous_flags = current_flags;
               current_flags = (unsigned)flags;
+              previous_site = current_site;
+              current_site = __builtin_return_address(0);
               return flags;
           }
 
           static int report(FILE *stream, const char *format, va_list arguments) {
               if (strcmp(format, "FAIL: %s (case %zu)\n") == 0) {
-                  char line[160];
+                  Dl_info info;
+                  const uintptr_t base = dladdr(current_site, &info) ? (uintptr_t)info.dli_fbase : 0;
+                  char line[250];
                   const int size = snprintf(line, sizeof(line),
-                      "Observed masks: previous=0x%x current=0x%x FE_OVERFLOW=0x%x FE_INEXACT=0x%x\n",
-                      previous_flags, current_flags, (unsigned)FE_OVERFLOW, (unsigned)FE_INEXACT);
+                      "Observed masks: previous=0x%x current=0x%x FE_OVERFLOW=0x%x FE_INEXACT=0x%x sites=0x%" PRIxPTR ",0x%" PRIxPTR "\n",
+                      previous_flags, current_flags, (unsigned)FE_OVERFLOW, (unsigned)FE_INEXACT,
+                      (uintptr_t)previous_site - base, (uintptr_t)current_site - base);
                   if (size > 0 && (size_t)size < sizeof(line))
                       (void)write(STDERR_FILENO, line, (size_t)size);
               }
@@ -104,6 +112,27 @@ jobs:
           test "$original" -eq "$traced"
           diff <(sed -n '/^FAIL:/p' original.out) <(sed -n '/^FAIL:/p' traced.out)
 
+      - name: Record instructions near the first exception reads
+        shell: bash
+        working-directory: build/ci
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          first = re.search(r'sites=(0x[0-9a-f]+),(0x[0-9a-f]+)', Path('traced.out').read_text())
+          if first:
+              sites = [int(site, 16) for site in first.groups()]
+              disassembly = subprocess.check_output(['objdump', '-dC', './test_aberth_step'], text=True)
+              for site in sites:
+                  print(f'fetestexcept returns to {site:#x}')
+                  for line in disassembly.splitlines():
+                      address = re.match(r'\s*([0-9a-f]+):', line)
+                      if address and site - 360 <= int(address[1], 16) <= site + 20:
+                          print(line)
+          PY
+
       - name: Compare compiler options on the same test translation unit
         shell: bash
         working-directory: build/ci
@@ -117,11 +146,13 @@ jobs:
           commands = json.loads(Path('compile_commands.json').read_text())
           entry, = [row for row in commands if row['file'].endswith('/tests/test_aberth_step.cpp')]
           compile_command = shlex.split(entry['command'])
-          link_command = shlex.split(Path('CMakeFiles/test_aberth_step.dir/link.txt').read_text())
+          link_command = ['cmake', '-E', 'cmake_link_script', 'CMakeFiles/test_aberth_step.dir/link.txt', '--verbose=0']
           for option in ('-fno-tree-slp-vectorize', '-frounding-math', '-O2'):
               print(option, flush=True)
               subprocess.run([*compile_command, option], check=True, cwd=entry['directory'])
               subprocess.run(link_command, check=True)
               result = subprocess.run(['./test_aberth_step'], timeout=60)
+              if result.returncode not in (0, 1):
+                  raise SystemExit(f'Cannot run the test with {option}: {result.returncode}')
               print(option, 'exit status', result.returncode, flush=True)
           PY
