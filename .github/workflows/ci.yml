@@ -1,4 +1,4 @@
-name: Portability trial
+name: macOS floating-point exception probe
 
 on:
   push:
@@ -70,18 +70,21 @@ jobs:
         shell: bash
         run: cmake --build build/ci --config Release --parallel "$BUILD_JOBS" -- -k
 
-      - name: Run CTest
+      - name: Compare the binary64 tests before and after strict exception handling
         shell: bash
-        run: ctest --test-dir build/ci -C Release --output-on-failure --parallel "$BUILD_JOBS"
-
-      - name: Measure the slow tests in isolation
-        if: ${{ failure() && steps.build.outcome == 'success' && runner.os == 'Linux' && matrix.cc == 'gcc-15' }}
-        shell: bash
-        working-directory: build/ci
         run: |
-          for test_name in piecewise_finisher auto_selection; do
-            printf '\nRunning %s with a five-minute limit\n' "$test_name"
-            test_status=0
-            time timeout --kill-after=10s 5m "./test_$test_name" || test_status=$?
-            printf '%s exit status: %s\n' "$test_name" "$test_status"
-          done
+          tests='^(candidate_interactions|machine_tree|study|model_stopping|d3|refinement_state|budget_stops)$'
+          original_status=0
+          ctest --test-dir build/ci -C Release --output-on-failure -R "$tests" || original_status=$?
+          printf 'Original CTest exit status %s\n' "$original_status"
+          cat >> CMakeLists.txt <<'CMAKE'
+
+          set_property(SOURCE
+              src/numeric/candidates/machine_candidates.cpp
+              src/numeric/candidates/study_candidates.cpp
+              src/platform/parallel.cpp
+              APPEND PROPERTY COMPILE_OPTIONS -ffp-exception-behavior=strict)
+          CMAKE
+          cmake -S . -B build/ci
+          cmake --build build/ci --config Release --parallel "$BUILD_JOBS"
+          ctest --test-dir build/ci -C Release --output-on-failure -R "$tests"
