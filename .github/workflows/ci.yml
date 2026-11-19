@@ -1,0 +1,53 @@
+name: Portability trial
+
+on:
+  push:
+    branches: [ci/portability-trial]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64 GCC
+            runner: ubuntu-26.04
+            cc: gcc-15
+            cxx: g++-15
+            jobs: 4
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      BUILD_JOBS: ${{ matrix.jobs }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install FLINT and Boost
+        shell: bash
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install flint boost
+          brew list --versions flint boost
+          printf 'FLINT_ROOT=%s\n' "$(brew --prefix flint)" >> "$GITHUB_ENV"
+          printf 'CMAKE_PREFIX_PATH=%s\n' "$(brew --prefix)" >> "$GITHUB_ENV"
+
+      - name: Configure Release
+        shell: bash
+        run: cmake -S . -B build/ci -DCMAKE_BUILD_TYPE=Release -DFLINT_ROOT="$FLINT_ROOT"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build/ci --config Release --parallel "$BUILD_JOBS"
+
+      - name: Run CTest
+        shell: bash
+        run: ctest --test-dir build/ci -C Release --output-on-failure --parallel "$BUILD_JOBS"
