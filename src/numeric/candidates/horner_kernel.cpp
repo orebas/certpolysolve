@@ -7,8 +7,7 @@
 // in that order, the derivative from the value before its own step. Each operation here is the AVX2 instruction that
 // makes the scalar one at four points, each lane rounded as the scalar operation rounds (IEEE 754, to nearest); no
 // operation is reordered or fused (the function is built without the FMA instruction, and the library with
-// -ffp-contract=off). A lane raises the flags its scalar operations raise. tests/test_kernel_variants.cpp compares
-// the two on every field and on the flags.
+// -ffp-contract=off). tests/test_kernel_variants.cpp compares the two on every field.
 #include "numeric/candidates/horner_kernel.hpp"
 #ifdef CERTPOLYSOLVE_HAVE_AVX2_FMA_KERNELS
 #include <immintrin.h>

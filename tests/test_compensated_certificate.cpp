@@ -153,7 +153,7 @@ uint64_t check_planted(const Planted &input, double perturbation, uint64_t bits,
 // others held. Every moving point must then be proved, its rectangle holding exactly one planted root, no two the
 // same; the held points must not move. Returns the points proved before the repair (the starts' own proofs).
 uint64_t check_refine(const Planted &input, const std::vector<std::pair<double, double>> &starts,
-                      const std::vector<int64_t> &moving, const std::string &name) {
+                      const std::vector<slong> &moving, const std::string &name) {
     const d::CompensatedCertificate tier(input.polynomial.value());
     require(tier.available(), name + ": the tier is unavailable");
     const auto o = goal(53);

@@ -14,6 +14,7 @@
 // A kernel's file takes the instructions by a function's target attribute, never by a compiler flag for the file:
 // a flag would also build the inline functions of every header the file includes for those instructions, and the
 // linker may keep such a copy for the whole library.
+#include "platform/ieee_arithmetic.hpp"
 #include <cstdint>
 
 // Whether this build has the Avx2Fma kernels at all.

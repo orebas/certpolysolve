@@ -222,7 +222,7 @@ template <class R> class PreparedNewton {
         size_t count = 0;
     };
     // The kernel on the waiting points (a group that is not full repeats its last point: each of the kernel's
-    // results is a function of its own point alone, and a copy raises no flag the point does not), then evaluate's
+    // results is a function of its own point alone), then evaluate's
     // return value at each.
     void run(Waiting &waiting, bool outside, std::span<const C> points, std::span<NewtonEvaluation<R>> out) const {
         if (!waiting.count)

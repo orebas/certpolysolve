@@ -1,11 +1,11 @@
 // W9's first cut, its fork and join (src/platform/parallel.hpp): without a team parallel_for runs its blocks in order on the
 // calling thread; with one (TeamScope) every block runs exactly once and the call returns after the last; a
 // parallel_for inside a block runs serially and in order; an exception from a block is rethrown after the join, the
-// lowest block's, every block having run; a worker's block runs in the default floating-point environment and the
-// flags it raises reach the calling thread; a worker starts with every signal blocked and the calling thread keeps
-// its mask; a job at a split site counts once, on a team only; a nested TeamScope keeps the outer team; four teams
-// on four threads run at once; and a team survives thousands of short jobs (the race and lost-wakeup shake-out, also
-// under ThreadSanitizer).
+// lowest block's, every block having run; a worker's block runs in the default floating-point environment (no flag
+// crosses the join since 19 November 2026: the library reads none); a worker starts with every signal blocked and the
+// calling thread keeps its mask; a job at a split site counts once, on a team only; a nested TeamScope keeps the outer
+// team; four teams on four threads run at once; and a team survives thousands of short jobs (the race and lost-wakeup
+// shake-out, also under ThreadSanitizer).
 #include "platform/parallel.hpp"
 #include <atomic>
 #include <cfenv>
@@ -79,8 +79,7 @@ void exceptions_come_home() {
 }
 
 // A worker's block runs in the default floating-point environment, the solve's thread's blocks in that thread's own
-// (a solve call sets it to the default too); a flag raised in any block is raised on the calling thread after the
-// join, as after a serial loop, and a loop that raises nothing leaves the flags clear.
+// (a solve call sets it to the default too).
 void floating_point_environment() {
     const d::TeamScope team(4);
     const int caller = std::fegetround();
@@ -94,14 +93,6 @@ void floating_point_environment() {
     std::fesetround(caller);
     for (size_t b = 0; b < 48; ++b)
         require(modes[b] == (own[b] ? FE_UPWARD : FE_TONEAREST), "a block ran in the wrong rounding mode");
-    std::feclearexcept(FE_ALL_EXCEPT);
-    d::parallel_for(16, [&](size_t b) {
-        if (b == 5) std::feraiseexcept(FE_DIVBYZERO);
-    });
-    require(std::fetestexcept(FE_DIVBYZERO) != 0, "a block's flag was lost at the join");
-    std::feclearexcept(FE_ALL_EXCEPT);
-    d::parallel_for(16, [&](size_t) {});
-    require(std::fetestexcept(FE_ALL_EXCEPT) == 0, "a loop that raised nothing left a flag");
 }
 
 #if defined(__unix__) || defined(__APPLE__)

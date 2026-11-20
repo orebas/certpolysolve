@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [ci/floating-point-follow-up-20261120]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    if: github.event.repository.private == false
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64 GCC
+            runner: ubuntu-26.04
+            cc: gcc-15
+            cxx: g++-15
+            generator: Unix Makefiles
+            jobs: 4
+          - name: Linux x64 Clang
+            runner: ubuntu-26.04
+            cc: clang-21
+            cxx: clang++-21
+            generator: Unix Makefiles
+            jobs: 4
+          - name: Linux Arm64 GCC
+            runner: ubuntu-26.04-arm
+            cc: gcc-15
+            cxx: g++-15
+            generator: Unix Makefiles
+            jobs: 4
+          - name: macOS Arm64 Apple Clang
+            runner: macos-15
+            cc: clang
+            cxx: clang++
+            developer_dir: /Applications/Xcode_26.3.app/Contents/Developer
+            generator: Unix Makefiles
+            jobs: 3
+          - name: Windows x64 MSVC
+            runner: windows-2022
+            generator: Visual Studio 17 2022
+            jobs: 4
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      DEVELOPER_DIR: ${{ matrix.developer_dir }}
+      CMAKE_GENERATOR: ${{ matrix.generator }}
+      BUILD_JOBS: ${{ matrix.jobs }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install FLINT and Boost with Homebrew
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          fi
+          brew install flint boost
+          brew list --versions flint boost
+          printf 'FLINT_ROOT=%s\n' "$(brew --prefix flint)" >> "$GITHUB_ENV"
+          printf 'CMAKE_PREFIX_PATH=%s\n' "$(brew --prefix)" >> "$GITHUB_ENV"
+
+      - name: Install FLINT and Boost with vcpkg
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg.exe'
+          & $vcpkg install flint boost-multiprecision --triplet x64-windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $vcpkg list
+          $prefix = Join-Path $env:VCPKG_INSTALLATION_ROOT 'installed/x64-windows'
+          "FLINT_ROOT=$prefix" >> $env:GITHUB_ENV
+          "CMAKE_PREFIX_PATH=$prefix" >> $env:GITHUB_ENV
+          (Join-Path $prefix 'bin') >> $env:GITHUB_PATH
+
+      - name: Configure Release
+        shell: bash
+        run: cmake -S . -B build/ci -DCMAKE_BUILD_TYPE=Release -DFLINT_ROOT="$FLINT_ROOT"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build/ci --config Release --parallel "$BUILD_JOBS"
+
+      - name: Run CTest
+        shell: bash
+        run: ctest --test-dir build/ci -C Release --output-on-failure --parallel "$BUILD_JOBS"

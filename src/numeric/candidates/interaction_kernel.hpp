@@ -3,8 +3,7 @@
 // (machine_candidates.cpp; aberth_step.hpp has the term, machine::interaction_term), made four at a time: the
 // differences, Smith's division and its three quotients run on four neighbours in AVX2 instructions, and the four
 // terms are then added to the one accumulator in the neighbours' order, as the reference adds them. Every operation
-// of a term is the reference's, and so is the order of the sum: the same bits and the same floating-point flags
-// (platform/kernel_variant.hpp).
+// of a term is the reference's, and so is the order of the sum: the same bits (platform/kernel_variant.hpp).
 #include "numeric/arithmetic/machine_arithmetic.hpp"
 #include "platform/kernel_variant.hpp"
 #include <cstddef>

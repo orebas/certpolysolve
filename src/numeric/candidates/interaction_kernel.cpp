@@ -7,11 +7,10 @@
 // and sum = sum + term, part by part. Here p is the part of b the case divides by and q the other, so r = q / p and
 // d = p + q r in both cases; a.im r = 0 r and a.re r = 1 r are made once, as each case makes them; the numerators of
 // both cases are then formed and each lane takes its own. The numerators' sums and differences are exact (a zero or
-// a one with a product by zero or by one), so forming the case a lane does not take raises no flag; every other
-// operation is one the reference makes at that term, rounded as the reference's (IEEE 754, to nearest), and no
+// a one with a product by zero or by one); every other operation is one the reference makes at that term, rounded as the reference's (IEEE 754, to nearest), and no
 // operation is reordered or fused (the library's -ffp-contract=off; the function is built without the FMA
 // instruction). The comparisons are quiet. A group with a zero difference is left to the caller before anything of
-// it is divided. tests/test_kernel_variants.cpp compares the sums and the flags with the reference's.
+// it is divided. tests/test_kernel_variants.cpp compares the sums with the reference's.
 #include "numeric/candidates/interaction_kernel.hpp"
 #ifdef CERTPOLYSOLVE_HAVE_AVX2_FMA_KERNELS
 #include <immintrin.h>

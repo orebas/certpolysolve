@@ -203,17 +203,17 @@ namespace {
 // compiler packs the lanes. It differs from the one-accumulator sum by rounding alone, and a packet's points are
 // proposals: the model and the certificates are computed from them elsewhere.
 //
-// A packet runs with the floating-point exceptions watched (SecularMachineWorkspace::advance rejects it on an
-// invalid operation, a division by zero, an overflow or an underflow), so the lanes must raise none that the
-// general loop does not. |d|^2 needs room that d does not, and a point on a node gives d = 0, the model's pole.
+// The lanes must compute every term the general loop computes, in range: |d|^2 needs room that d does not, and a
+// point on a node gives d = 0, the model's pole. (Until 19 November 2026 a packet also ran with the floating-point
+// exceptions watched, and the lanes had to raise no flag the general loop does not.)
 // So the lanes run only while every part of every node and point is zero or between 2^-packet_part_exponent
 // and 2^packet_part_exponent in size: a difference of two such parts is zero or at least a unit in the last
 // place of the lower bound, 2^-(packet_part_exponent + 52), and a squared distance is zero or within
 // [2^-904, 2^803], where neither it nor its reciprocal leaves binary64's range. A zero distance is recorded and
 // its term is divided by the least normal number instead (the term is then zero): the sum it is in is discarded
 // and the caller's general loop runs, as it did before. The guard is a maximum and not a test: a compiler
-// moves a division into the arm of a test and computes it for every term, zero divisor included, and the
-// division-by-zero flag it raises would reject every packet with a point on a node.
+// may move a division into the arm of a test and compute it for every term, a zero divisor included, so the
+// divisor itself is kept away from zero.
 // History: docs/code-history-20261021.md, study_candidates.cpp 3.
 inline constexpr size_t packet_lanes = 4;
 inline constexpr int packet_part_exponent = 400;
@@ -758,12 +758,6 @@ SecularMachineWorkspace::advance(CandidateProgress &progress,
     const auto initial_bits = stage_bits(o.bits);
     for (size_t i = 0; i < n; ++i)
         if (!inactive[i] && bits[i] > initial_bits) return false;
-    fenv_t environment;
-    if (std::feholdexcept(&environment) != 0) return false;
-    struct Restore {
-        fenv_t *p;
-        ~Restore() { std::fesetenv(p); }
-    } restore{ &environment };
     if (!impl_) impl_ = std::make_unique<Impl>();
     auto &cache = *impl_;
     auto *counts = policy.study_statistics.get();
@@ -778,7 +772,6 @@ SecularMachineWorkspace::advance(CandidateProgress &progress,
     } else if (counts)
         ++counts->reuses;
     if (!cache.ordinary_ready && !cache.scaled_ready) return false;
-    std::feclearexcept(FE_ALL_EXCEPT);
     const bool ordinary = cache.ordinary_ready;
     // The exponent-managed scalar kernel is different from the ordinary
     // binary64 kernel. Retain its actual terms even on refusal/cancellation.
@@ -802,9 +795,14 @@ SecularMachineWorkspace::advance(CandidateProgress &progress,
     bool accepted = ordinary ? cache.ordinary.advance(progress, out, initial, inactive, sweeps, o, s, model, keep_unmoved,
                                                       policy.packet_lane_sums)
                              : cache.scaled.advance(progress, out, initial, inactive, sweeps, o, s, model, keep_unmoved);
-    const int exceptions = std::fetestexcept(FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW | (ordinary ? FE_UNDERFLOW : 0));
+    // No floating-point flag is read (machine_arithmetic.hpp, before underflow_floor), and no floor stands in here:
+    // the model's value 1 - sum carries the constant 1, and its stop tests weigh it against sums of at least 1, so no
+    // underflow can make the value or its noise vanish, as Horner's can in the coefficient path. An underflow can cost
+    // a step precision only at nodes, points or residues near the bottom of binary64's range: a residue is kept only
+    // above 2^-106 of its node, so a term amplifies an underflow past the rounding only at a node below about 2^-900.
+    // Such a step, here or in NodeOffsets::refine, is a candidate like any other, and the validation that follows
+    // measures it on the original input.
     if (progress.cancelled) return true;
-    accepted = accepted && !exceptions;
     if (counts) {
         ++counts->machine_packets;
         if (!ordinary) ++counts->scaled_packets;
@@ -838,9 +836,8 @@ SecularMachineWorkspace::advance(CandidateProgress &progress,
         if (cache.offsets_ready) {
             RootVector refined(static_cast<slong>(n));
             _acb_vec_set(refined.data(), out, static_cast<slong>(n));
-            std::feclearexcept(FE_ALL_EXCEPT);
             const auto taken = cache.offsets.refine(refined.data(), nodes, inactive, initial_bits, s);
-            if (taken && !std::fetestexcept(FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW | FE_UNDERFLOW)) {
+            if (taken) {
                 _acb_vec_set(out, refined.data(), static_cast<slong>(n));
                 if (policy.trace)
                     event(policy, s, "study_secular_candidates", "offset-binary64", "floor-steps",

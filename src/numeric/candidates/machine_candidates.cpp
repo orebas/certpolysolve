@@ -11,9 +11,10 @@
 // heuristics::machine_interaction_tree_degree on, binary64 with interaction_tree takes S from a
 // MachineInteractionTree, built for a sweep when its counted terms undercut the direct sums. A point stops when its
 // relative step is below 2^(8 - bits_) (Stop::SmallStep) or |p| below its Horner roundoff estimate (Stop::Roundoff).
-// An arithmetic failure (an invalid, divide-by-zero or overflow flag, a disallowed underflow, a non-finite or
-// coincident point) restores the packet's starting points (backup_) and clears valid_; export_candidates writes the
-// points unscaled, as zero-radius balls.
+// An arithmetic failure (a correction or point that is not finite, a coincident point, or, where underflow is not
+// allowed, an evaluation below machine::underflow_floor; no floating-point flag is read since 19 November 2026)
+// restores the packet's starting points (backup_) and clears valid_; export_candidates writes the points unscaled, as
+// zero-radius balls.
 //
 // State: MachineEngine<R>, between advance calls: coefficients_, scale_, points_, stops_, backup_, newton_evaluator_ or
 // evaluator_, valid_, and the tree's last costs (tree_build_terms_, tree_point_terms_).
@@ -150,17 +151,6 @@ template <class R> class MachineEngine final : public NumericalEngine {
             out.arithmetic_failure = true;
             return out;
         }
-        // Restore the caller's flags; do not leave rounding-mode/global state
-        // changes behind. FE_INEXACT is expected for candidate arithmetic.
-        fenv_t environment;
-        if (std::feholdexcept(&environment) != 0) {
-            out.arithmetic_failure = true;
-            return out;
-        }
-        struct Restore {
-            fenv_t *value;
-            ~Restore() { std::fesetenv(value); }
-        } restore{&environment};
         backup_ = points_;
 #ifdef CERTPOLYSOLVE_HAVE_AVX2_FMA_KERNELS
         // Whether the direct interaction sums take their terms four at a time (binary64 only).
@@ -195,13 +185,13 @@ template <class R> class MachineEngine final : public NumericalEngine {
                 StageTimer evaluation_timer(statistics.evaluation_ns);
                 // The sweep's evaluations read only points_ and the evaluator, which evaluate leaves as it is, and
                 // each writes its own slot. W9's split (parallel.hpp): in blocks of machine_split_block points from
-                // machine_split_points points, on a solve with workers; the flags the workers raise reach this
-                // thread's window at the join, so the packet's verdict below is today's.
+                // machine_split_points points, on a solve with workers; the packet's verdict below reads only the
+                // values the blocks wrote.
                 const size_t count = points_.size();
                 const auto evaluate_range = [&](size_t first, size_t last) {
                     if (newton_evaluator_) {
                         // Each active point's evaluate, the dense loops four points at a time where the CPU allows
-                        // (PreparedNewton::evaluate_range: the same values and flags).
+                        // (PreparedNewton::evaluate_range: the same values).
                         newton_evaluator_->evaluate_range(points_, first, last,
                                                           [&](size_t j) { return stops_[j] == Stop::Active; },
                                                           newton_values_);
@@ -242,6 +232,15 @@ template <class R> class MachineEngine final : public NumericalEngine {
                 const C value = newton_evaluator_ ? newton_values_[i].value : jets_[i].value;
                 const C derivative = newton_evaluator_ ? newton_values_[i].denominator : jets_[i].derivative;
                 const R absolute_sum = newton_evaluator_ ? newton_values_[i].absolute_sum : jets_[i].absolute_sum;
+                // Where underflow is not allowed, an evaluation whose absolute sum lies below machine::underflow_floor
+                // fails the packet: there an underflow could rival Horner's rounding, and the value and the noise
+                // below could both vanish and stop the point where no root is. At z = 0 every product is by zero and
+                // exact, so the evaluation is not refused (a zero root stops below, as Roundoff).
+                if constexpr (std::is_same_v<R, double>)
+                    if (!allow_underflow_ && absolute_sum < machine::underflow_floor && !(z == C{})) {
+                        out.arithmetic_failure = true;
+                        break;
+                    }
                 // Complex Horner accumulates O(n*u) absolute roundoff.
                 // This midpoint condition estimate is deliberately NOT a
                 // certificate: it only asks for a more accurate tier before
@@ -321,7 +320,7 @@ template <class R> class MachineEngine final : public NumericalEngine {
                     }
                     // The direct sum: the neighbours below i, then those above it, j ascending, one accumulator.
                     // In binary64, where the CPU has the instructions, the terms are made four neighbours at a time
-                    // and added in the same order (interaction_kernel: the same bits and flags); what is left of a
+                    // and added in the same order (interaction_kernel: the same bits); what is left of a
                     // range, and a group that holds a point equal to z, goes a term at a time.
                     const auto add_terms = [&](size_t first, size_t last) {
                         size_t j = first;
@@ -386,12 +385,10 @@ template <class R> class MachineEngine final : public NumericalEngine {
                 out.candidates.converged)
                 break;
         }
-        const auto exceptions = std::fetestexcept(FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW | FE_UNDERFLOW);
-        // Exponent-alignment underflow is intentional in ScaledDouble, but its
-        // mantissa multiplication remains normalized. Binary64 rejects it unless the caller allows it.
-        out.arithmetic_failure = out.arithmetic_failure ||
-                                 (exceptions & (FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW)) ||
-                                 (!allow_underflow_ && !std::is_same_v<R, machine::ScaledDouble> && (exceptions & FE_UNDERFLOW));
+        // No floating-point flag is read (machine::underflow_floor). An invalid operation, a division by zero or an
+        // overflow shows in the values: a correction or a point that is not finite fails the packet, above and here.
+        // (An infinite interaction term, from two points closer than 2^-1024, could leave a zero correction instead;
+        // both points would have to lie below 2^-971.)
         for (auto z : points_)
             out.arithmetic_failure = out.arithmetic_failure || !machine::finite(z);
         if (out.arithmetic_failure) {
@@ -441,13 +438,6 @@ std::unique_ptr<NumericalEngine> prepare_machine_engine(IterationMethod method, 
     }
     if (std::fegetround() != FE_TONEAREST)
         return {};
-    fenv_t environment;
-    if (std::feholdexcept(&environment) != 0)
-        return {};
-    struct Restore {
-        fenv_t *value;
-        ~Restore() { std::fesetenv(value); }
-    } restore{&environment};
     const auto n = acb_poly_degree(p);
     // Admission before allocation: 16 * 64 bytes a coefficient, the estimate of the engine that also had the
     // research methods' scratch.

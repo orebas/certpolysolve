@@ -98,6 +98,7 @@
       "depends": [
         "core",
         "input",
+        "platform",
         "public"
       ]
     },
@@ -424,6 +425,7 @@
     "src/numeric/transforms/fixed_transform.hpp": "numeric_transforms",
     "src/platform/deadline.hpp": "platform",
     "src/platform/floating_environment.hpp": "platform",
+    "src/platform/ieee_arithmetic.hpp": "platform",
     "src/platform/kernel_variant.cpp": "platform",
     "src/platform/kernel_variant.hpp": "platform",
     "src/platform/parallel.cpp": "platform",
@@ -562,6 +564,7 @@
     "src/numeric/transforms/fixed_transform.hpp",
     "src/platform/deadline.hpp",
     "src/platform/floating_environment.hpp",
+    "src/platform/ieee_arithmetic.hpp",
     "src/platform/kernel_variant.hpp",
     "src/platform/parallel.hpp",
     "src/solve/solve_state.hpp"

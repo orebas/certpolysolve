@@ -337,7 +337,6 @@ reciprocal_newton_evaluation() {
     }
     const auto forward = machine::jet<double, 1>(coefficients, C(2));
     require(!machine::finite(forward.value), "range example did not exceed forward binary64 evaluation");
-    std::feclearexcept(FE_ALL_EXCEPT);
     std::vector<C> monomial(9);
     monomial.back() = C(1);
     machine::PreparedNewton<double> zero_factor(monomial);
@@ -380,7 +379,10 @@ per_root_machine_stop() {
 // underflows: to exactly zero at z = 1/2 (2^-1099 is below binary64's least subnormal), and to a subnormal at
 // z = 33/64, where p/p' (about 2^1038) overflows. Aberth's correction 1 / (p'/p - S) is defined at both. One
 // starting point at either place, the others where the attempt starts them, must not end the packet for
-// every point (the zero) or fail it (the overflow): the packet converges.
+// every point (the zero) or fail it (the overflow): the packet converges. It does so with underflow allowed, as in
+// the certificate attempt's packet, and since 19 November 2026 also without: the evaluations' absolute sums, about 1,
+// lie far above machine::underflow_floor, so the underflows in p' are harmless (until then the underflow flag failed
+// the packet).
 void
 unrepresentable_newton_ratio() {
     constexpr slong n = 2200, k = 1100;
@@ -388,13 +390,13 @@ unrepresentable_newton_ratio() {
     acb_poly_set_coeff_si(polynomial.value(), 0, 1);
     acb_poly_set_coeff_si(polynomial.value(), k, -3);
     acb_poly_set_coeff_si(polynomial.value(), n, 1);
+    for (const bool allow_underflow : {true, false})
     for (const double start : {0.5, 33.0 / 64.0}) {
         RootVector seeds(n);
         require(initial_candidates(seeds.data(), polynomial.value(), 64), "no starting points");
         acb_set_d(seeds.data(), start);
-        // Underflow allowed, as in the certificate attempt's packet; otherwise the zero is an arithmetic failure.
         auto engine = prepare_machine_engine(IterationMethod::Aberth, ArithmeticTier::Binary64,
-                                             polynomial.value(), seeds.view(), false, false, true);
+                                             polynomial.value(), seeds.view(), false, false, allow_underflow);
         require(bool(engine), "binary64 preparation failed");
         cps_options options;
         certpolysolve::detail::CandidateStatistics statistics{};
@@ -408,6 +410,79 @@ unrepresentable_newton_ratio() {
         acb_abs(modulus.value(), output.data(), 64);
         require(std::abs(arf_get_d(arb_midref(modulus.value()), ARF_RND_NEAR) - 1) < 0x1p-8,
                 "the point did not reach the roots' circles");
+    }
+}
+// machine::underflow_floor (machine_arithmetic.hpp), the value test that replaced the underflow flag on 19 November
+// 2026. p = (x - 2^-1010)(x - 2^1010) is scaled to coefficients 2^-1011, about -1/2 and 2^-1011, so near either root
+// binary64's evaluation has an absolute sum of about 2^-1010, below the floor: without underflow allowed the packet
+// fails, and the scaled format, with an exponent of its own, finds both roots. On x^3 + x a point exactly at the zero
+// root has an absolute sum of exactly 0, from exact products: it is not refused, it stops there, and the other two
+// points reach +-i.
+void
+underflow_floor_decides() {
+    const auto relative_error = [](acb_srcptr candidate, acb_srcptr root) {
+        ComplexBall difference;
+        acb_sub(difference.value(), candidate, root, 4096);
+        Magnitude error, size;
+        acb_get_mag(error.value(), difference.value());
+        acb_get_mag(size.value(), root);
+        return mag_get_d_log2_approx(error.value()) - mag_get_d_log2_approx(size.value());
+    };
+    {
+        RootVector roots(2), seeds(2);
+        acb_one(roots.data());
+        acb_mul_2exp_si(roots.data(), roots.data(), -1010);
+        acb_one(roots.data() + 1);
+        acb_mul_2exp_si(roots.data() + 1, roots.data() + 1, 1010);
+        ComplexPolynomial polynomial;
+        acb_poly_product_roots(polynomial.value(), roots.data(), 2, 4096);
+        acb_mul_2exp_si(seeds.data(), roots.data(), 0);
+        acb_mul_2exp_si(seeds.data() + 1, roots.data() + 1, 0);
+        acb_mul_ui(seeds.data(), seeds.data(), 3, 64);
+        acb_mul_2exp_si(seeds.data(), seeds.data(), -1); // 1.5 times the small root
+        acb_mul_ui(seeds.data() + 1, seeds.data() + 1, 3, 64);
+        acb_mul_2exp_si(seeds.data() + 1, seeds.data() + 1, -2); // 0.75 times the large one
+        cps_options options;
+        certpolysolve::detail::CandidateStatistics statistics{};
+        auto plain = prepare_machine_engine(IterationMethod::Aberth, ArithmeticTier::Binary64, polynomial.value(),
+                                            seeds.view());
+        require(bool(plain), "binary64 preparation of the wide input failed");
+        const auto refused = plain->advance(heuristics::machine_cover_sweeps, options, statistics);
+        require(refused.arithmetic_failure, "an evaluation below the underflow floor did not fail the packet");
+        auto scaled = prepare_machine_engine(IterationMethod::Aberth, ArithmeticTier::ScaledBinary64,
+                                             polynomial.value(), seeds.view());
+        require(bool(scaled), "scaled preparation of the wide input failed");
+        const auto step = scaled->advance(heuristics::machine_cover_sweeps, options, statistics);
+        require(!step.arithmetic_failure && step.candidates.converged, "the scaled format did not converge");
+        RootVector output(2);
+        scaled->export_candidates(output.data());
+        for (slong i = 0; i < 2; ++i)
+            require(relative_error(output.data() + i, roots.data() + i) < -40,
+                    "the scaled format missed a root of the wide input");
+    }
+    {
+        ComplexPolynomial polynomial;
+        acb_poly_set_coeff_si(polynomial.value(), 1, 1);
+        acb_poly_set_coeff_si(polynomial.value(), 3, 1);
+        RootVector seeds(3), roots(3);
+        acb_zero(seeds.data());
+        acb_set_d_d(seeds.data() + 1, 0.1, 1.1);
+        acb_set_d_d(seeds.data() + 2, -0.1, -0.9);
+        acb_zero(roots.data());
+        acb_set_d_d(roots.data() + 1, 0, 1);
+        acb_set_d_d(roots.data() + 2, 0, -1);
+        auto engine = prepare_machine_engine(IterationMethod::Aberth, ArithmeticTier::Binary64, polynomial.value(),
+                                             seeds.view());
+        require(bool(engine), "binary64 preparation of x^3 + x failed");
+        cps_options options;
+        certpolysolve::detail::CandidateStatistics statistics{};
+        const auto step = engine->advance(heuristics::machine_cover_sweeps, options, statistics);
+        require(!step.arithmetic_failure, "a point exactly at a zero root failed the packet");
+        RootVector output(3);
+        engine->export_candidates(output.data());
+        require(acb_is_zero(output.data()), "the point at the zero root moved");
+        for (slong i = 1; i < 3; ++i)
+            require(relative_error(output.data() + i, roots.data() + i) < -40, "a point missed +-i on x^3 + x");
     }
 }
 // Class E of the equivalence screen: p(3x) with p = x^3200 + x^1600 + 1.
@@ -547,6 +622,7 @@ main() {
         reciprocal_newton_evaluation();
         per_root_machine_stop();
         unrepresentable_newton_ratio();
+        underflow_floor_decides();
         nondyadic_machine_scaling();
         secular_input_equivalence();
         public_arithmetic_routes();

@@ -101,24 +101,21 @@ bool same_bits(double a, double b) {
 bool same_bits(ScaledDouble a, ScaledDouble b) { return same_bits(a.mantissa, b.mantissa) && a.exponent == b.exponent; }
 template <class R> bool same_bits(Complex<R> a, Complex<R> b) { return same_bits(a.re, b.re) && same_bits(a.im, b.im); }
 
-// A step, whether the kernel refused it (SecularPoints at a zero denominator), and the floating-point flags raised.
+// A step and whether the kernel refused it (SecularPoints at a zero denominator). No floating-point flag is compared:
+// since 19 November 2026 the library reads none, and GCC raised an overflow in an unused vector lane here that the
+// value never showed (a continuous-integration run of that day).
 template <class R> struct Outcome {
     Complex<R> value;
     bool refused = false;
-    int flags = 0;
 };
 template <class R, class F> Outcome<R> observe(F f) {
-    std::feclearexcept(FE_ALL_EXCEPT);
     Outcome<R> outcome = f();
     keep(outcome.value);
-    outcome.flags = std::fetestexcept(FE_ALL_EXCEPT);
     return outcome;
 }
 size_t binary64_compared = 0, scaled_compared = 0, secular_refusals = 0;
 template <class R> void check(const Outcome<R> &shared, const Outcome<R> &reference, const char *what, size_t trial) {
-    require(shared.refused == reference.refused && same_bits(shared.value, reference.value) &&
-                shared.flags == reference.flags,
-            what, trial);
+    require(shared.refused == reference.refused && same_bits(shared.value, reference.value), what, trial);
     ++(std::is_same_v<R, double> ? binary64_compared : scaled_compared);
 }
 

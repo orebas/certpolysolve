@@ -70,7 +70,6 @@ class WorkerTeam {
         size_t blocks = 0;
         std::atomic<size_t> next{0}, left{0};
         std::vector<std::exception_ptr> errors;
-        std::vector<int> flags; // the floating-point exception flags a worker's block raised
     };
     std::mutex mutex_;
     std::condition_variable start_, done_;
@@ -81,21 +80,17 @@ class WorkerTeam {
     std::vector<std::thread> threads_;
     SplitJobs jobs_{}; // the solve's thread's alone (parallel_for at a site)
 
-    // Claims and runs blocks until none is left. On a worker, each block starts with its flags clear and leaves the
-    // flags it raised in its slot; the solve's thread runs its blocks in its own environment, where they raise their
-    // flags as a serial loop would.
-    static void work(Job &job, bool worker) {
+    // Claims and runs blocks until none is left.
+    static void work(Job &job) {
         for (;;) {
             const size_t block = job.next.fetch_add(1, std::memory_order_relaxed);
             if (block >= job.blocks) return;
             in_block = true;
-            if (worker) std::feclearexcept(FE_ALL_EXCEPT);
             try {
                 (*job.body)(block);
             } catch (...) {
                 job.errors[block] = std::current_exception();
             }
-            if (worker) job.flags[block] = std::fetestexcept(FE_ALL_EXCEPT);
             in_block = false;
             job.left.fetch_sub(1, std::memory_order_acq_rel);
         }
@@ -112,7 +107,7 @@ class WorkerTeam {
             Job *job = job_;
             ++inside_;
             lock.unlock();
-            work(*job, true);
+            work(*job);
             lock.lock();
             if (--inside_ == 0) done_.notify_all();
         }
@@ -155,24 +150,18 @@ class WorkerTeam {
         job.blocks = blocks;
         job.left.store(blocks, std::memory_order_relaxed);
         job.errors.resize(blocks);
-        job.flags.assign(blocks, 0);
         {
             std::lock_guard<std::mutex> lock(mutex_);
             job_ = &job;
             ++generation_;
         }
         start_.notify_all();
-        work(job, false);
+        work(job);
         {
             std::unique_lock<std::mutex> lock(mutex_);
             done_.wait(lock, [&] { return job.left.load(std::memory_order_acquire) == 0 && inside_ == 0; });
             job_ = nullptr;
         }
-        // The workers' flags raised here, so that a window the solve's thread holds (feholdexcept, fetestexcept) sees
-        // every flag the loop raised, as after a serial loop.
-        int raised = 0;
-        for (const int f : job.flags) raised |= f;
-        if (raised) std::feraiseexcept(raised);
         for (auto &error : job.errors)
             if (error) std::rethrow_exception(error);
     }
