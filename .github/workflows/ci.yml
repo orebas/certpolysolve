@@ -73,6 +73,25 @@ jobs:
           printf 'FLINT_ROOT=%s\n' "$(brew --prefix flint)" >> "$GITHUB_ENV"
           printf 'CMAKE_PREFIX_PATH=%s\n' "$(brew --prefix)" >> "$GITHUB_ENV"
 
+      - name: Configure the vcpkg binary cache
+        if: runner.os == 'Windows'
+        id: windows-cache
+        shell: pwsh
+        run: |
+          $cache = Join-Path $env:RUNNER_TEMP 'vcpkg-archives'
+          New-Item -ItemType Directory -Force -Path $cache | Out-Null
+          "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
+          "image=$env:ImageVersion" >> $env:GITHUB_OUTPUT
+
+      - name: Restore Windows dependency binaries
+        if: runner.os == 'Windows'
+        id: vcpkg-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ matrix.runner }}-x64-windows-${{ steps.windows-cache.outputs.image }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: vcpkg-${{ matrix.runner }}-x64-windows-
+
       - name: Install FLINT and Boost with vcpkg
         if: runner.os == 'Windows'
         shell: pwsh
@@ -85,6 +104,13 @@ jobs:
           "FLINT_ROOT=$prefix" >> $env:GITHUB_ENV
           "CMAKE_PREFIX_PATH=$prefix" >> $env:GITHUB_ENV
           (Join-Path $prefix 'bin') >> $env:GITHUB_PATH
+
+      - name: Save Windows dependency binaries
+        if: runner.os == 'Windows' && github.event_name != 'pull_request' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
       - name: Configure Release
         shell: bash
