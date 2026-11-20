@@ -161,7 +161,7 @@ class CompensatedCertificate {
     // Returns whether a point
     // moved; a point whose step is not finite stays where it was. Adds to `evaluated` the steps it took at a point
     // (a converged point takes no more), the unit its caller charges.
-    bool refine(acb_ptr points, int64_t n, const std::vector<int64_t> &moving, int64_t goal_bits, uint64_t &evaluated,
+    bool refine(acb_ptr points, int64_t n, const std::vector<slong> &moving, int64_t goal_bits, uint64_t &evaluated,
                 unsigned max_steps) const;
 
   private:

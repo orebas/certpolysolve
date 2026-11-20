@@ -16,6 +16,7 @@
 // Every operation is a fixed sequence of IEEE operations and exact scalings (the same bits on every CPU), and
 // the representation is unique (equal values compare equal by their fields).
 #include "core/raii.hpp"
+#include "platform/ieee_arithmetic.hpp"
 #include <cmath>
 #include <cstdint>
 #include <limits>

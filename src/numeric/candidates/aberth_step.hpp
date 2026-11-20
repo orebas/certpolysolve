@@ -20,17 +20,17 @@
 //   aberth_correction, or logarithmic_aberth_correction where p' is zero or the exponent fields put N or N S beyond
 //   binary64's range (without it a five-term input lost its packet: machine_candidates.cpp 4). A point stops at a
 //   relative step below 2^-45 or at |p| below Horner's noise; in binary64 an N that is not finite ends the packet
-//   (exhausted); a coincident point, a step that is not finite, or an invalid, divide-by-zero, overflow or (binary64,
-//   unless allowed) underflow flag fails it.
+//   (exhausted); a coincident point, a step that is not finite, or (binary64, unless underflow is allowed) an
+//   evaluation whose absolute sum lies below machine::underflow_floor fails it. No floating-point flag is read.
 // - SecularPoints<R>::advance (study_candidates.cpp; binary64 and ScaledDouble): Jacobi. N from the secular model (on
 //   a node, its removable limit). S, in binary64 on the secular recipe while every part is within 2^+-400, in four
 //   fixed-order lanes, conj(d) times 1 / max(|d|^2, DBL_MIN) (12.7 -> 2.8 ns a pair: study_candidates.cpp 2);
 //   otherwise by interaction_term in one accumulator. aberth_denominator with a zero test, or aberth_pole_limit at a
-//   pole of the model. A zero denominator, a zero S at a pole, a coincident point, a step that is not finite or a
-//   flag refuses the packet; the model's stops (ModelStoppingState) or a largest relative step below 2^-45 end it.
+//   pole of the model. A zero denominator, a zero S at a pole, a coincident point or a step that is not finite
+//   refuses the packet; the model's stops (ModelStoppingState) or a largest relative step below 2^-45 end it.
 // - NodeOffsets::refine (study_candidates.cpp; binary64): one Jacobi step, node-relative, at a fresh model's floor.
 //   N the node's limit from two-part node differences; S by interaction_term; aberth_correction. Only steps between
-//   2^(2 - stage) and 2^(2 - 53) of the node are taken; a step that is not finite or a flag refuses them all.
+//   2^(2 - stage) and 2^(2 - 53) of the node are taken; a step that is not finite refuses them all.
 // - ProgramMachineStage::sweep (program_candidates.cpp; binary64): Jacobi, every point evaluated at the sweep's
 //   start positions, then every correction. N = value / derivative from the batched program evaluator, or from its
 //   range tier (BlockDouble) converted back. S transposed, conj(d) / |d|^2 by two divisions, each sum its own

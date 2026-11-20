@@ -436,7 +436,8 @@ bool same(const m::Jet<double> &a, const m::horner_kernel::Sums &b) {
     return same(a.value.re, b.value_re) && same(a.value.im, b.value_im) && same(a.derivative.re, b.derivative_re) &&
            same(a.derivative.im, b.derivative_im) && same(a.absolute_sum, b.absolute_sum);
 }
-constexpr int every_flag = FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW | FE_UNDERFLOW | FE_INEXACT;
+// No floating-point flag is compared: since 19 November 2026 the library reads none (machine::underflow_floor), and a
+// compiler need not keep them (an unused vector lane of GCC's raised an overflow its value never showed).
 std::vector<m::Complex<double>> random_coefficients(std::mt19937_64 &rng, size_t count, int kind) {
     std::uniform_real_distribution<double> unit(-1, 1);
     std::uniform_int_distribution<int> exponent(-300, 300);
@@ -471,26 +472,14 @@ uint64_t horner_loop() {
                     z[l] = points[(first + l * 3) % points.size()];
                     zr[l] = z[l].re, zi[l] = z[l].im;
                 }
-                // The norms first, outside both windows: the kernel is given them.
+                // The norms first: the kernel is given them.
                 for (size_t l = 0; l < group; ++l)
                     radius[l] = m::norm(z[l]);
                 m::Jet<double> expected[group];
-                std::feclearexcept(FE_ALL_EXCEPT);
                 for (size_t l = 0; l < group; ++l)
                     expected[l] = jets.evaluate(z[l]);
-                const int raised = std::fetestexcept(every_flag);
-                // evaluate computes the norm again inside its window; its flags are taken apart.
-                std::feclearexcept(FE_ALL_EXCEPT);
-                for (size_t l = 0; l < group; ++l)
-                    radius[l] = m::norm(z[l]);
-                const int norm_flags = std::fetestexcept(every_flag);
                 m::horner_kernel::Sums wide[group];
-                std::feclearexcept(FE_ALL_EXCEPT);
                 m::horner_kernel::avx2(coefficients.data(), jets.magnitudes().data(), count, zr, zi, radius, wide);
-                const int kernel_flags = std::fetestexcept(every_flag);
-                require((kernel_flags | norm_flags) == raised,
-                        "the dense loop's four-point variant raises other floating-point flags: " +
-                            std::to_string(kernel_flags | norm_flags) + " against " + std::to_string(raised));
                 for (size_t l = 0; l < group; ++l) {
                     require(same(expected[l], wide[l]),
                             "the dense loop's four-point variant differs from the reference: " +
@@ -529,10 +518,8 @@ uint64_t newton_ranges() {
             const m::PreparedNewton<double> newton(coefficients);
             const auto points = sample_points(rng, 3);
             std::vector<m::NewtonEvaluation<double>> expected(points.size());
-            std::feclearexcept(FE_ALL_EXCEPT);
             for (size_t i = 0; i < points.size(); ++i)
                 expected[i] = newton.evaluate(points[i]);
-            const int raised = std::fetestexcept(every_flag);
             const m::NewtonEvaluation<double> untouched{{7, 7}, {7, 7}, {7, 7}, 7, 7};
             for (const auto variant : variants()) {
                 const Under scope(variant);
@@ -541,13 +528,8 @@ uint64_t newton_ranges() {
                     const auto active = [&](size_t j) { return period == 1 || j % period != 0; };
                     for (size_t first = 0; first < points.size(); first += 11) {
                         const size_t last = std::min(points.size(), first + 11);
-                        if (period == 1 && first == 0)
-                            std::feclearexcept(FE_ALL_EXCEPT);
                         newton.evaluate_range(points, first, last, active, out);
                     }
-                    if (period == 1)
-                        require(std::fetestexcept(every_flag) == raised,
-                                "evaluate_range raises other floating-point flags than evaluate a point");
                     for (size_t i = 0; i < points.size(); ++i) {
                         require(same(out[i], active(i) ? expected[i] : untouched),
                                 "evaluate_range differs from evaluate: " + std::to_string(count) +
@@ -688,11 +670,8 @@ uint64_t interaction_sums() {
     uint64_t compared = 0;
     const auto compare = [&](const std::vector<m::Complex<double>> &points, const std::string &where) {
         std::vector<DirectSum> expected(points.size());
-        std::feclearexcept(FE_ALL_EXCEPT);
         for (size_t i = 0; i < points.size(); ++i)
             expected[i] = direct_reference(points, i);
-        const int raised = std::fetestexcept(every_flag);
-        std::feclearexcept(FE_ALL_EXCEPT);
         for (size_t i = 0; i < points.size(); ++i) {
             const DirectSum got = direct_grouped(points, i);
             require(got.finite == expected[i].finite && got.terms == expected[i].terms &&
@@ -701,8 +680,6 @@ uint64_t interaction_sums() {
                         std::to_string(i));
             ++compared;
         }
-        require(std::fetestexcept(every_flag) == raised,
-                "the interaction sum's four-term variant raises other floating-point flags: " + where);
     };
     for (size_t n = 2; n <= 70; n = n < 13 ? n + 1 : n + 19) {
         for (int kind = 0; kind <= 4; ++kind) {

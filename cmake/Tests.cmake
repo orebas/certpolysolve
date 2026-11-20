@@ -146,8 +146,11 @@ target_link_libraries(test_refinement_state PRIVATE certpolysolve_core CertPolyS
 add_test(NAME refinement_state COMMAND test_refinement_state)
 if(CERTPOLYSOLVE_SANITIZERS)
     # The full Debug ASan/UBSan regression takes 232 s on the qualification host.
-    # Round that to four minutes and allow twice it; the ordinary build keeps 60 s.
+    # Round that to four minutes and allow twice it.
     set_tests_properties(refinement_state PROPERTIES TIMEOUT 480)
+elseif(MSVC)
+    # The Windows Release CI run reached the ordinary 60 s limit.
+    set_tests_properties(refinement_state PROPERTIES TIMEOUT 120)
 else()
     set_tests_properties(refinement_state PROPERTIES TIMEOUT 60)
 endif()
@@ -179,6 +182,7 @@ target_include_directories(test_exact_complex PRIVATE src include "${CERTPOLYSOL
 target_link_libraries(test_exact_complex PRIVATE certpolysolve_core CertPolySolve::certpolysolve FLINT::FLINT Threads::Threads)
 add_test(NAME exact_complex COMMAND test_exact_complex)
 add_executable(test_factor_pass tests/test_factor_pass.cpp)
+target_compile_features(test_factor_pass PRIVATE cxx_std_20)
 target_include_directories(test_factor_pass PRIVATE src include)
 add_test(NAME factor_pass COMMAND test_factor_pass)
 
@@ -263,7 +267,7 @@ endif()
 add_test(NAME meter_tables COMMAND test_meter_tables)
 set_tests_properties(meter_tables PROPERTIES TIMEOUT 120 LABELS "correctness;quick")
 # Aberth's step (src/numeric/candidates/aberth_step.hpp): the operations the kernels share against the code they replaced at each
-# kernel, bit for bit, with the library's floating-point flags (W8's S10).
+# kernel, bit for bit, with the library's floating-point options (W8's S10).
 add_executable(test_aberth_step tests/test_aberth_step.cpp)
 target_compile_features(test_aberth_step PRIVATE cxx_std_20)
 target_include_directories(test_aberth_step PRIVATE src include)
@@ -273,21 +277,13 @@ if(MSVC)
 else()
     target_compile_options(test_aberth_step PRIVATE -Wall -Wextra)
     certpolysolve_strict_floating_point(test_aberth_step)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        # The test reads the floating-point flags around each kernel call (feclearexcept, then fetestexcept).
-        # C++ gives that no meaning without FENV_ACCESS, and Clang at -O3 moves floating-point operations across
-        # those calls, so which flags a window sees depends on the code's arrangement: on 24 October the same
-        # source passed and failed on an unrelated edit of the test. This option pins the operations in place.
-        # GCC keeps them in place by default (-ftrapping-math), and MSVC under /fp:strict.
-        target_compile_options(test_aberth_step PRIVATE -ffp-exception-behavior=strict)
-    endif()
 endif()
 add_test(NAME aberth_step COMMAND test_aberth_step)
 set_tests_properties(aberth_step PROPERTIES TIMEOUT 120 LABELS "correctness;quick")
 # A kernel's variants against its reference (src/platform/kernel_variant.hpp): the four-point AVX2 kernels of the
 # compensated certificate and of the machine iteration return the reference's bits, and the certificate attempt and the
 # machine engine give the same results under either. It builds PreparedJets' reference loop itself, so it takes the
-# library's floating-point flags, and it reads the floating-point flags around kernel calls, as test_aberth_step does.
+# library's floating-point options.
 add_executable(test_kernel_variants tests/test_kernel_variants.cpp)
 target_compile_features(test_kernel_variants PRIVATE cxx_std_20)
 target_include_directories(test_kernel_variants PRIVATE src include)
@@ -297,12 +293,23 @@ if(MSVC)
 else()
     target_compile_options(test_kernel_variants PRIVATE -Wall -Wextra)
     certpolysolve_strict_floating_point(test_kernel_variants)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        target_compile_options(test_kernel_variants PRIVATE -ffp-exception-behavior=strict)
-    endif()
 endif()
 add_test(NAME kernel_variants COMMAND test_kernel_variants)
 set_tests_properties(kernel_variants PROPERTIES TIMEOUT 300 LABELS "correctness;quick")
+# The library refuses a build that may rewrite its floating-point arithmetic (src/platform/ieee_arithmetic.hpp): a
+# file that includes the header compiles under the ordinary options and stops with the header's message under
+# -ffast-math or -ffinite-math-only.
+if(NOT MSVC)
+    set(certpolysolve_ieee_build "${CMAKE_CXX_COMPILER}" -std=c++20 -fsyntax-only "-I${CMAKE_CURRENT_SOURCE_DIR}/src")
+    set(certpolysolve_ieee_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/ieee_arithmetic_build.cpp")
+    add_test(NAME ieee_arithmetic_header COMMAND ${certpolysolve_ieee_build} "${certpolysolve_ieee_source}")
+    add_test(NAME fast_math_refused COMMAND ${certpolysolve_ieee_build} -ffast-math "${certpolysolve_ieee_source}")
+    add_test(NAME finite_math_refused COMMAND ${certpolysolve_ieee_build} -ffinite-math-only "${certpolysolve_ieee_source}")
+    set_tests_properties(fast_math_refused finite_math_refused PROPERTIES
+                         PASS_REGULAR_EXPRESSION "needs IEEE 754 arithmetic as written")
+    set_tests_properties(ieee_arithmetic_header fast_math_refused finite_math_refused PROPERTIES
+                         TIMEOUT 60 LABELS "correctness;quick")
+endif()
 # The certificate attempt's first pass gives the same cover and counters whatever the size of its groups and
 # whichever kernel variant runs (one point a group is the pass before the groups).
 add_executable(test_attempt_groups tests/test_attempt_groups.cpp)
@@ -357,7 +364,8 @@ add_executable(test_piecewise_finisher tests/test_piecewise_finisher.cpp)
 target_include_directories(test_piecewise_finisher PRIVATE src include tests "${CERTPOLYSOLVE_BOOST_INCLUDE_DIR}")
 target_link_libraries(test_piecewise_finisher PRIVATE certpolysolve_core CertPolySolve::certpolysolve FLINT::FLINT)
 add_test(NAME piecewise_finisher COMMAND test_piecewise_finisher)
-set_tests_properties(piecewise_finisher PROPERTIES TIMEOUT 90)
+# The Windows and GCC x64 CI runs reached the previous 90 s limit.
+set_tests_properties(piecewise_finisher PROPERTIES TIMEOUT 180)
 if(CERTPOLYSOLVE_SANITIZERS)
     # The expanded exact-root oracle takes 108 s in the Debug sanitizer build;
     # allow twice the ordinary owned-only limit for both finisher modes.

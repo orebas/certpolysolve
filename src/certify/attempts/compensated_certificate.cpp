@@ -817,7 +817,7 @@ bool CompensatedCertificate::prove(Root &root, double xr, double xi, const cps_o
     return g.ok && finish_proof(root, e, g, second_derivative_bound(e.modulus, g.reach_out), options, precision, retry);
 }
 
-bool CompensatedCertificate::refine(acb_ptr points, int64_t n, const std::vector<int64_t> &moving, int64_t goal_bits,
+bool CompensatedCertificate::refine(acb_ptr points, int64_t n, const std::vector<slong> &moving, int64_t goal_bits,
                                     uint64_t &evaluated, unsigned max_steps) const {
     using DD = machine::DoubleDouble;
     using Z = machine::Complex<DD>;

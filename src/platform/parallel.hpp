@@ -10,9 +10,8 @@
 // - The only lock hands out the job and signals the join; nobody holds it while a block runs.
 // - An exception in a block is kept and rethrown on the solve's thread after the join (the lowest block's).
 // - A worker runs in the default floating-point environment (round to nearest, every exception masked), the solve's
-//   thread in its own, which a solve call sets to the same. The flags a worker's blocks raise are raised on the
-//   solve's thread after the join, so a window that thread holds sees every flag the loop raised, as after a
-//   serial loop.
+//   thread in its own, which a solve call sets to the same. No floating-point flag crosses the join: since 19
+//   November 2026 the library reads none (machine::underflow_floor).
 // - Nothing outlives the call: the scope's destructor stops and joins the workers, and each worker frees its FLINT
 //   caches (flint_cleanup) before it ends.
 // - A worker starts with every signal blocked, so that a signal meant for the host's threads never runs its handler

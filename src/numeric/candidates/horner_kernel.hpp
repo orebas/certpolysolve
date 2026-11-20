@@ -2,7 +2,7 @@
 // The dense loop of the machine iteration's evaluation in binary64 (candidate_jets.hpp: PreparedJets<double, 1>'s
 // evaluate is the reference), at four points at a time: the value, the derivative and the condition estimate's sum by
 // Horner's scheme, each point's operations the reference's in the reference's order (platform/kernel_variant.hpp), so
-// that it returns the reference's bits and raises the reference's floating-point flags.
+// that it returns the reference's bits.
 #include "numeric/arithmetic/machine_arithmetic.hpp"
 #include "platform/kernel_variant.hpp"
 #include <cstddef>

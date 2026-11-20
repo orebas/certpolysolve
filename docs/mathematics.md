@@ -357,11 +357,14 @@ is below `2^-45`, or `|p(z)|` below the estimate `32(n+1)2^-53 sum_j |a_j||z|^j`
 of Horner's rounding. Sweeps come in quanta of `machine_cover_sweeps` (32), cut
 short by the call's iteration budget; another runs only while the last stopped a
 point, others still move, and the budget (below) pays for it beside one
-certificate pass. An arithmetic failure (an invalid, divide-by-zero or overflow
-flag, a disallowed underflow, a non-finite or coincident point) restores the
-quantum's starting points; in the first quantum, or with no engine, the packet
-then runs with a separate exponent (`ScaledBinary64`), but before piecewise the
-attempt is refused; a later failure ends the packet. Nothing here is certified.
+certificate pass. An arithmetic failure (a correction or point that is not
+finite, a coincident point, or, where underflow is not allowed, a point whose
+Horner terms sum in absolute value to less than `2^-1002`, where an underflow
+could cost more than `2^-20` of Horner's rounding) restores the quantum's
+starting points; no floating-point flag is read. In the first quantum, or with
+no engine, the packet then runs with a separate exponent (`ScaledBinary64`), but
+before piecewise the attempt is refused; a later failure ends the packet.
+Nothing here is certified.
 
 A point first tries the compensated tier (`src/compensated_certificate.cpp`). It proves the same statement more
 cheaply, wherever the attempt evaluates the dense coefficients (not a sparse source). The coefficients are held once

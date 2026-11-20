@@ -1,4 +1,5 @@
 #pragma once
+#include "platform/ieee_arithmetic.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -11,6 +12,23 @@ namespace certpolysolve::detail::machine {
 inline constexpr int binary64_bits = std::numeric_limits<double>::digits;
 inline constexpr int double_double_bits = 2 * binary64_bits;
 static_assert(binary64_bits == 53);
+// The candidate stage never reads the floating-point exception flags (19 November 2026): C++ gives them no meaning
+// without FENV_ACCESS, and compilers move, add or drop the operations that raise them. Where an underflow could
+// decide something, a test of values stands in, and only there.
+//
+// The floor is for the coefficient path's binary64 evaluation (machine_candidates.cpp). Binary64 evaluates p by
+// Horner's scheme only at |z| <= 1 (PreparedNewton reverses the polynomial outside the unit circle), with every part
+// of every coefficient below 1 (machine_scaling). An underflow there, or a subnormal coefficient's rounding, is an
+// absolute error of at most 2^-1075 (half the least subnormal), which the later steps multiply by powers of z, at
+// most 1: an evaluation's underflows add up to at most 2^1.5 n 2^-1075 (a complex product rounds two products a
+// part). Horner's noise, the stop test's allowance, is 32 (n + 1) 2^-53 S, with S = sum |a_j||z|^j the evaluation's
+// absolute sum. For S >= underflow_floor = 2^(-1022 + underflow_margin_bits), the allowance exceeds the underflows
+// more than 2^underflow_margin_bits times. (The sparse loop multiplies a partial sum, at most sqrt 2 times the
+// number of coefficients above it, by a power z^g that may have underflowed; the margin shrinks by that number.)
+// Below the floor the value and the noise can both vanish, and a point would stop where no root is.
+inline constexpr int underflow_margin_bits = 20;
+inline constexpr double underflow_floor = 0x1p-1002;
+static_assert(std::numeric_limits<double>::min_exponent - 1 + underflow_margin_bits == -1002);
 // Candidate arithmetic only. Round-to-nearest, no reassociation; explicit FMA
 // recovers product roundoff. This is double-double (~106 bits), not binary128.
 struct DoubleDouble {

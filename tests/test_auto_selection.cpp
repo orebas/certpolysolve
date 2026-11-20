@@ -20,25 +20,32 @@ namespace d = certpolysolve::detail;
 using namespace reference;
 
 namespace {
+bool negative_sign(int index) {
+    return ((index * 2654435761u) >> 7) & 1u;
+}
+
 // A flat envelope: |c_j| ~ 1/sqrt(j!), with deterministic signs. Its roots
 // spread over a disk that grows like sqrt(degree), the regime of the
 // flat/elliptic/hyperbolic families where piecewise is the fast method.
-Polynomial flat(int degree) {
-    Polynomial p(static_cast<size_t>(degree) + 1);
+// Encode each signed power of two directly as a mantissa and binary exponent.
+certpolysolve::Polynomial flat(int degree, unsigned stride = 1) {
+    certpolysolve::Polynomial p;
     for (int j = 0; j <= degree; ++j) {
-        const auto exponent = static_cast<int>(std::llround(0.5 * std::lgamma(j + 1.0) / std::log(2.0)));
-        const bool negative = ((j * 2654435761u) >> 7) & 1u;
-        p[static_cast<size_t>(j)] = negative ? Rational(-power2(-exponent)) : power2(-exponent);
+        const auto exponent = -std::llround(0.5 * std::lgamma(j + 1.0) / std::log(2.0));
+        const char *significand = negative_sign(j) ? "-1@" : "1@";
+        p.set(static_cast<uint64_t>(j) * stride, certpolysolve::Number(significand + std::to_string(exponent)));
     }
+    require(p.ok(), "could not encode the exact flat fixture");
     return p;
 }
 
 // Coefficients +1 and -1 with the same deterministic signs: the envelope of a random dense polynomial, whose roots
 // lie near the unit circle and whose piecewise estimate grows like the degree.
-Polynomial unit_signs(int degree) {
-    Polynomial p(static_cast<size_t>(degree) + 1);
+certpolysolve::Polynomial unit_signs(int degree) {
+    certpolysolve::Polynomial p;
     for (int j = 0; j <= degree; ++j)
-        p[static_cast<size_t>(j)] = (((j * 2654435761u) >> 7) & 1u) ? Rational(-1) : Rational(1);
+        p.set(static_cast<uint64_t>(j), negative_sign(j) ? -1 : 1);
+    require(p.ok(), "could not encode the exact unit-sign fixture");
     return p;
 }
 
@@ -55,7 +62,7 @@ int main() {
     try {
         // Queries outside the explicit methods keep the D5 route.
         {
-            const auto input = reference::input(flat(24));
+            const auto input = flat(24);
             auto options = approximation();
             options.real_only = true;
             require(d::select_auto_route(certpolysolve::detail::dense(*input.get()), options).route == d::AutoRoute::D5,
@@ -79,21 +86,19 @@ int main() {
         }
         // Moderate degree: the global methods' budget is cheaper than
         // piecewise's estimated model and local work.
-        require(d::select_auto_route(certpolysolve::detail::dense(*reference::input(flat(256)).get()), approximation()).route ==
+        require(d::select_auto_route(certpolysolve::detail::dense(*flat(256).get()), approximation()).route ==
                     d::AutoRoute::Secular,
                 "degree-256 flat input did not use secular");
         // A power composite q(x^2): piecewise refuses it, secular reduces it.
         {
-            const auto base = flat(64);
-            Polynomial composite(2 * base.size() - 1);
-            for (size_t j = 0; j < base.size(); ++j) composite[2 * j] = base[j];
-            require(d::select_auto_route(certpolysolve::detail::dense(*reference::input(composite).get()), approximation()).route ==
+            const auto composite = flat(64, 2);
+            require(d::select_auto_route(certpolysolve::detail::dense(*composite.get()), approximation()).route ==
                         d::AutoRoute::Secular,
                     "power composite was routed to piecewise");
         }
         // Large flat degree: piecewise's estimate falls below the global
         // stage's minimum sweep budget.
-        const auto large = d::select_auto_route(certpolysolve::detail::dense(*reference::input(flat(8192)).get()), approximation());
+        const auto large = d::select_auto_route(certpolysolve::detail::dense(*flat(8192).get()), approximation());
         require(large.route == d::AutoRoute::Piecewise, "degree-8192 flat input did not use piecewise");
         // A precision cap below piecewise's first working precision (its
         // ladder's base rung for the goal) is not routed to piecewise, which
@@ -101,12 +106,12 @@ int main() {
         {
             auto capped = approximation();
             capped.max_work_bits = static_cast<uint64_t>(d::piecewise_start_precision(capped.bits)) - 1;
-            const auto below = d::select_auto_route(certpolysolve::detail::dense(*reference::input(flat(8192)).get()), capped);
+            const auto below = d::select_auto_route(certpolysolve::detail::dense(*flat(8192).get()), capped);
             require(below.route == d::AutoRoute::Secular &&
                         std::string(below.reason) == "precision-cap-below-piecewise-start",
                     "a precision cap below piecewise's start was routed to piecewise");
             capped.max_work_bits += 1;
-            require(d::select_auto_route(certpolysolve::detail::dense(*reference::input(flat(8192)).get()), capped).route == d::AutoRoute::Piecewise,
+            require(d::select_auto_route(certpolysolve::detail::dense(*flat(8192).get()), capped).route == d::AutoRoute::Piecewise,
                     "a precision cap at piecewise's start was refused");
         }
         // The piecewise estimate walks one ring per octave of the root window,
@@ -139,7 +144,7 @@ int main() {
         // when the full estimate satisfies the selector's inequality, on
         // inputs on both sides of it.
         for (const int degree : {16, 256, 1024, 8192}) {
-            const auto input = reference::input(flat(degree));
+            const auto input = flat(degree);
             const auto options = approximation();
             d::PiecewiseAdmissionPolicy lifted;
             lifted.maximum_envelope_bend = lifted.maximum_work_ratio = std::nullopt;
@@ -193,8 +198,7 @@ int main() {
             // The order rule: the attempt first exactly when piecewise's
             // estimate is at least the golden ratio times that cost, on
             // inputs on both sides of it. The flat envelopes' estimates are
-            // several times the attempt's cost to degree 16,384 and beyond
-            // (their exact coefficients grow too long for a test above it);
+            // several times the attempt's cost through degree 16,384;
             // the unit coefficients' estimate falls below the golden ratio
             // times the cost between degree 8,192 and 16,384.
             //
@@ -217,9 +221,8 @@ int main() {
                 d::PiecewiseAdmission admission;
             };
             std::vector<Fixture> fixtures;
-            for (const auto &fixture :
+            for (const auto &input :
                  {flat(2048), flat(4096), flat(8192), flat(16384), unit_signs(8192), unit_signs(16384), unit_signs(65536)}) {
-                const auto input = reference::input(fixture);
                 d::PiecewiseAdmissionPolicy lifted;
                 lifted.maximum_envelope_bend = lifted.maximum_work_ratio = std::nullopt;
                 lifted.maximum_global_sweeps = d::heuristics::initial_sweep_allowance;
@@ -301,7 +304,7 @@ int main() {
         {
             bool would_flip = false;
             for (const int degree : {256, 1024, 2048, 4096}) {
-                const auto input = reference::input(flat(degree));
+                const auto input = flat(degree);
                 const auto at_default = d::select_auto_route(certpolysolve::detail::dense(*input.get()), approximation());
                 for (const uint64_t bits : {10, 24}) {
                     auto options = approximation();
